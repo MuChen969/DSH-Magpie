@@ -123,23 +123,23 @@ window.__ModuleLoader__.load({
         }
         // Fallback for builds where the reflection service is unavailable:
         // open the Plugins panel, then locate this bundle's entry.
-        setNavHint('正在打开插件设置…')
+        setNavHint('正在打开插件设置。')
         clickWhenReady(
           () => findClickable(['插件', 'Plugins']),
           4000,
           (opened) => {
             if (!opened) {
-              setNavHint('未找到「插件」入口，请点击左侧边栏的「插件」，再选择 DSH-Magpie。')
+              setNavHint('未找到「插件」入口，请点击左侧边栏的「插件」，然后选择 DSH-Magpie。')
               return
             }
-            setNavHint('已打开插件页，正在定位 DSH-Magpie…')
+            setNavHint('已打开插件页，正在定位 DSH-Magpie。')
             clickWhenReady(
               () => findClickable(['DSH-Magpie']),
               5000,
               (found) => {
                 setNavHint(found
                   ? null
-                  : '请在插件列表中找到 DSH-Magpie，打开详情页后即可安装引擎。')
+                  : '请在插件列表中找到 DSH-Magpie，打开详情页后安装引擎。')
               },
             )
           },
@@ -191,12 +191,12 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'dsh-magpie-center' },
                 h('div', { className: 'dsh-magpie-section__title' }, 'Magpie 引擎尚未安装'),
                 h('div', { className: 'dsh-magpie-section__desc', style: { maxWidth: '360px' } },
-                  '点击下方按钮前往插件详情页，再点击「安装引擎」即可。'),
+                  '请点击下方按钮前往插件详情页安装引擎。'),
                 h('button', {
                   className: btnClass('primary', 'md'),
                   style: { marginTop: '4px' },
                   onClick: openInstallPage,
-                }, '前往安装'),
+                }, '安装引擎'),
                 navHint
                   ? h('div', {
                       role: 'status',
@@ -207,10 +207,10 @@ window.__ModuleLoader__.load({
                   : null,
               )
             : state === 'checking'
-              ? h('div', { className: 'dsh-magpie-center' }, '正在检查安装状态…')
+              ? h('div', { className: 'dsh-magpie-center' }, '正在检查安装状态。')
               : error
                 ? h('div', { className: 'dsh-magpie-center' }, '无法启动 Magpie 界面，请查看上方错误信息或在插件页检查引擎状态。')
-                : h('div', { className: 'dsh-magpie-center' }, '正在启动官方 Magpie 界面…'),
+                : h('div', { className: 'dsh-magpie-center' }, '正在启动官方 Magpie 界面。'),
       )
     }
 
@@ -233,7 +233,7 @@ window.__ModuleLoader__.load({
       const percent = ratio === null ? null : Math.round(ratio * 100)
       return h('div', { className: 'dsh-magpie-progress' },
         h('div', { className: 'dsh-magpie-progress__meta' },
-          h('span', {}, '正在下载 Magpie 引擎…'),
+          h('span', {}, '正在下载 Magpie 引擎。'),
           h('span', {}, ratio === null ? mb(received) : `${percent}%  ${mb(received)} / ${mb(total)}`),
         ),
         h('div', { className: 'dsh-magpie-progress__track' },
@@ -419,7 +419,7 @@ window.__ModuleLoader__.load({
               disabled: busy, onClick: onCancel,
             }, '×'),
           ),
-          h('p', { className: 'dsh-magpie-modal__desc' }, '将移除已下载的引擎程序与运行数据；GitHub 镜像配置会保留，可随时重新下载安装。'),
+          h('p', { className: 'dsh-magpie-modal__desc' }, '此操作将移除引擎程序及其运行数据；GitHub 镜像配置予以保留，可重新安装引擎。'),
           h('div', { className: 'dsh-magpie-modal__footer' },
             h('button', {
               ref: cancelRef, className: btnClass('outline', 'md'),
@@ -427,7 +427,7 @@ window.__ModuleLoader__.load({
             }, '取消'),
             h('button', {
               className: btnClass('danger', 'solid', 'md'), disabled: busy, onClick: onConfirm,
-            }, busy ? h('span', {}, h(Spinner, { small: true }), '卸载中…') : '卸载引擎'),
+            }, busy ? h('span', {}, h(Spinner, { small: true }), '卸载中。') : '卸载引擎'),
           )
         )
       )
@@ -530,7 +530,7 @@ window.__ModuleLoader__.load({
 
       async function onInstall() {
         await withAction('install', async () => {
-          notify('info', '已开始下载 Magpie 引擎，请稍候…')
+          notify('info', '已开始下载 Magpie 引擎，请稍候。')
           try {
             const data = await apiPost('/install', {})
             if (!data.ok) throw new Error(data.error || 'install request failed')
@@ -558,7 +558,7 @@ window.__ModuleLoader__.load({
       async function onToggleEngine() {
         await withAction('engine', async () => {
           const action = info?.engineState === 'ready' ? 'stop' : 'start'
-          notify('info', action === 'stop' ? '正在停止引擎…' : '正在启动引擎…')
+          notify('info', action === 'stop' ? '正在停止引擎。' : '正在启动引擎。')
           try {
             const data = await apiPost(`/${action}`, {})
             if (!data.ok) throw new Error(data.error || `${action} failed`)
@@ -572,7 +572,7 @@ window.__ModuleLoader__.load({
 
       async function onSync() {
         await withAction('sync', async () => {
-          notify('info', '正在同步模型到 DSH…')
+          notify('info', '正在同步模型到 DSH。')
           try {
             const data = await apiPost('/sync-models', {})
             if (!data.ok) {
@@ -600,7 +600,7 @@ window.__ModuleLoader__.load({
       async function doUninstallEngine() {
         setConfirmUninstall(false)
         await withAction('uninstall-engine', async () => {
-          notify('info', '正在卸载 Magpie 引擎…')
+          notify('info', '正在卸载 Magpie 引擎。')
           try {
             const data = await apiPost('/uninstall-engine', {})
             if (!data.ok) throw new Error(data.error || 'uninstall engine failed')
@@ -631,7 +631,7 @@ window.__ModuleLoader__.load({
         installed
           ? h(InstalledStatus, { info })
           : h('div', { className: 'dsh-magpie-section__desc' },
-              '尚未安装内置 Magpie，点击下方按钮安装（经 SHA256 校验）。'),
+              '尚未安装内置 Magpie，请点击下方「安装引擎」按钮，程序将经过 SHA-256 校验。'),
 
         // duplicate detection — only other Magpie plugins inside DSH.
         info?.detection?.hasDuplicate
@@ -676,7 +676,7 @@ window.__ModuleLoader__.load({
               style: dim('save'), disabled: Boolean(busy), onClick: onSave,
             }, btnContent('save', '保存')),
           ),
-          h('div', { className: 'dsh-magpie-field__hint' }, '作为下载链接前缀；保存后永久生效，留空则使用官方地址。'),
+          h('div', { className: 'dsh-magpie-field__hint' }, '该地址作为下载链接前缀，保存后永久生效；留空则使用官方地址。'),
         ),
 
         // actions
@@ -685,7 +685,7 @@ window.__ModuleLoader__.load({
             className: btnClass('primary', 'md'),
             style: dim('install'), disabled: Boolean(busy) || installing || installed, onClick: onInstall,
             title: installed ? '引擎已安装，请先卸载引擎再安装' : undefined,
-          }, btnContent('install', installing ? '正在安装…' : '安装引擎')),
+          }, btnContent('install', installing ? '正在安装。' : '安装引擎')),
           h('button', {
             className: btnClass('outline', 'md'),
             style: dim('engine'), disabled: Boolean(busy) || !installed, onClick: onToggleEngine,
