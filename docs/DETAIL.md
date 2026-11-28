@@ -2,7 +2,7 @@
 
 # DSH-Magpie
 
-> 在 DeepSeek Harness 侧边栏嵌入官方 Magpie 模型管理界面，并把 Magpie 网关模型接入 DSH 模型选择器。
+> 在 DeepSeek Harness 侧边栏嵌入官方 Magpie 模型管理界面。
 
 [![DSH Web Plugin](https://img.shields.io/badge/DSH-Web%20Plugin-2563eb.svg)](https://github.com/MuChen969/dsh-magpie)
 [![version](https://img.shields.io/badge/version-v1.0.0-4d93f8.svg)](https://github.com/MuChen969/dsh-magpie)
@@ -16,7 +16,7 @@
 
 ## 功能概览
 
-在 DSH 侧边栏新增一个「模型工作台」入口，点击后在主区域以 iframe 显示官方 Magpie Web GUI —— 供应商、Agent、路由、网关、用量、脱敏、插件等功能与官方一致。引擎与模型接入则完全在 DSH 内完成配置。
+在 DSH 侧边栏新增一个「模型工作台」入口，点击后在主区域以 iframe 显示官方 Magpie Web GUI —— 供应商、Agent、路由、网关、用量、脱敏、插件等功能与官方一致。引擎的安装、启动与配置完全在 DSH 内完成。
 
 | | |
 |---|---|
@@ -25,10 +25,9 @@
 | **🔁 可配置 GitHub 镜像** | 可填写自定义镜像前缀加速二进制下载，保存后永久生效；出于安全，发布元数据与校验和始终走官方 GitHub。 |
 | **🔍 重复安装检测** | 仅检测 DSH 内的其他 Magpie 插件并给出提示，避免重复占用资源。 |
 | **🧩 独立内置实例** | 引擎运行在 DSH 管理的私有目录，端口随机分配，不调用、不干扰本机外部安装的 Magpie。 |
-| **🔌 模型接入 DSH** | 引擎就绪后手动同步，把网关模型注册为 DSH 的 `magpie` provider，随即可在模型选择器中使用；网关地址随端口自动更新。 |
 | **⚡ 按需启停** | 可手动启动/停止，打开模型工作台时也会按需启动，不随 DSH 自动运行。 |
-| **🗑️ 手动卸载引擎** | 插件详情页提供「卸载引擎」按钮：删除引擎二进制、私有数据与模型 provider，**保留** GitHub 镜像配置；卸载后可再次点击「安装引擎」重新安装。 |
-| **🧹 卸载遵循 DSH 官方机制** | 从 DSH 插件面板卸载本插件时，插件通过官方 `plugin-manager/operation` 事件识别真实卸载（`settled/remove/applied`），随后停止 Magpie 子进程并清理引擎二进制、私有数据目录、GitHub 镜像配置与模型 provider；更新、禁用、HMR 重载与 DSH 关闭不会触发清理。 |
+| **🗑️ 手动卸载引擎** | 插件详情页提供「卸载引擎」按钮：删除引擎二进制与私有数据，**保留** GitHub 镜像配置；卸载后可再次点击「安装引擎」重新安装。 |
+| **🧹 卸载遵循 DSH 官方机制** | 从 DSH 插件面板卸载本插件时，插件通过官方 `plugin-manager/operation` 事件识别真实卸载（`settled/remove/applied`），随后停止 Magpie 子进程并清理引擎二进制、私有数据目录与 GitHub 镜像配置；更新、禁用、HMR 重载与 DSH 关闭不会触发清理。 |
 
 插件界面沿用 DSH 官方设计语言：控件样式基于宿主 token，侧边栏图标为线性描边风格，与原生入口保持一致；官方引擎 GUI 本身不做任何改动。
 
@@ -38,7 +37,7 @@
 
 - 已安装时显示状态卡片（文件名、版本、运行中/已就绪）
 - 提供「安装引擎」入口（引擎已安装时该按钮禁用，需先卸载引擎才能再次安装）
-- GitHub 镜像配置、启动/停止、同步模型、卸载引擎等操作一应俱全
+- GitHub 镜像配置、启动/停止、卸载引擎等操作一应俱全
 
 模型工作台：侧边栏入口 → 主区域 iframe 显示官方 Magpie GUI；引擎未安装时可直接跳转回本插件详情页。
 
@@ -59,10 +58,8 @@
 2. 如官方二进制下载不畅，可在「GitHub 镜像」中填入镜像地址并保存，再下载。
    > **注意**：出于安全，发布元数据与 `SHA256SUMS` 始终从官方 GitHub 获取，因此官方 GitHub 必须可达；镜像仅加速二进制文件下载，不能替代官方地址。
 3. 下载完成后点击「启动引擎」，或直接从侧边栏打开「模型工作台」按需启动。
-4. 点击「同步模型到 DSH」，把网关模型注册到 DSH 模型选择器。
-5. 在 DSH 的模型选择器中选择 `Magpie` provider 下的模型即可对话。
-6. 仅移除引擎而保留插件时，在插件详情页点击「卸载引擎」并确认：会删除引擎二进制、私有数据与模型 provider，但**保留 GitHub 镜像配置**，之后点击「安装引擎」即可重新获取引擎。
-7. 需要移除本插件时，在 DSH 的插件面板中卸载即可。卸载遵循 DSH 官方插件生命周期：插件监听官方卸载事件，在真实卸载完成后自动停止 Magpie 子进程，并清理 `~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json`、迁移标记以及 DSH 中的 magpie 模型 provider，做到零残留。更新、禁用、HMR 重载与 DSH 关闭不会删除数据。
+4. 仅移除引擎而保留插件时，在插件详情页点击「卸载引擎」并确认：会删除引擎二进制与私有数据，但**保留 GitHub 镜像配置**，之后点击「安装引擎」即可重新获取引擎。
+5. 需要移除本插件时，在 DSH 的插件面板中卸载即可。卸载遵循 DSH 官方插件生命周期：插件监听官方卸载事件，在真实卸载完成后自动停止 Magpie 子进程，并清理 `~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json` 与迁移标记，做到零残留。更新、禁用、HMR 重载与 DSH 关闭不会删除数据。
 
 ## 本地接口
 
@@ -73,11 +70,9 @@
 | `GET /api/dsh-magpie/install/status` | 安装状态、镜像配置、重复安装检测 |
 | `GET` / `POST /api/dsh-magpie/install/config` | 读取 / 保存 GitHub 镜像配置 |
 | `POST /api/dsh-magpie/install` | 手动触发下载安装（异步，轮询 status 查看进度） |
-| `POST /api/dsh-magpie/uninstall-engine` | 手动卸载引擎：删除引擎二进制、私有数据与模型 provider，**保留** GitHub 镜像配置 |
-| `GET /api/dsh-magpie/status` | 引擎状态与模型同步状态 |
+| `POST /api/dsh-magpie/uninstall-engine` | 手动卸载引擎：删除引擎二进制与私有数据，**保留** GitHub 镜像配置 |
+| `GET /api/dsh-magpie/status` | 引擎状态 |
 | `GET /api/dsh-magpie/gui` | 获取界面地址，必要时按需启动 |
-| `GET /api/dsh-magpie/models` | 查看从网关发现的模型 |
-| `POST /api/dsh-magpie/sync-models` | 手动重新同步模型到 DSH |
 | `POST /api/dsh-magpie/start` / `stop` / `reset` | 启动 / 停止 / 重置引擎 |
 
 更详细的运行机制见 [docs/DETAIL.md](docs/DETAIL.md)。
@@ -88,8 +83,7 @@
 |---|---|
 | 下载引擎很慢或失败 | 配置可用的 GitHub 镜像前缀再下载；官方 GitHub 仍需可达（用于校验和）。 |
 | 模型工作台提示引擎未安装 | 点击面板中的「前往安装」，会直接打开本插件详情页。 |
-| 卸载后仍有文件残留 | 卸载会清理引擎、数据、镜像配置与模型 provider；Windows 上若进程短暂占用目录，清理会重试。稍等片刻后若仍有残留，可手动删除：`~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json`、`~/.dsh/.dsh-magpie-legacy-migrated`。 |
-| 模型选择器里没有 Magpie 模型 | 先启动引擎，再点「同步模型到 DSH」；若网关暂无模型，请先在 Magpie GUI 中配置供应商与模型。 |
+| 卸载后仍有文件残留 | 卸载会清理引擎、数据与镜像配置；Windows 上若进程短暂占用目录，清理会重试。稍等片刻后若仍有残留，可手动删除：`~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json`、`~/.dsh/.dsh-magpie-legacy-migrated`。 |
 | 检测到其他 Magpie 插件 | 本插件使用完全独立的内置实例（独立目录与随机端口），不会冲突；请自行评估是否需要两份实例。 |
 | 修改代码后界面未更新 | 按一次 DSH 界面的刷新（或重启 DSH）以加载最新插件代码。 |
 
@@ -97,7 +91,7 @@
 
 ```
 DSH-Magpie/
-├── index.js               # Host 端：路由、安装配置、引擎生命周期、模型自动注册
+├── index.js               # Host 端：路由、安装配置、引擎生命周期
 ├── magpie-engine.js       # 引擎：二进制下载校验、进程管理、Web UI 反向代理、重复检测
 ├── client.js              # Client 端：侧边栏入口、iframe 面板、插件页安装/配置卡片
 ├── cordis.patch.yml       # DSH Loader 补丁

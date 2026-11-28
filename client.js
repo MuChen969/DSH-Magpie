@@ -5,7 +5,7 @@
  * 2. Adds an installation / settings card to the bundle's own page in Plugins
  *    (slot `plugins.bundle.config`, key = package name). The card lets the user
  *    manually download the Magpie binary, configure a GitHub mirror, see a
- *    duplicate-install warning, start/stop the engine and sync models.
+ *    duplicate-install warning and start/stop the engine.
  *
  * Uninstall is handled entirely by DSH's official plugin manager: removing this
  * bundle calls the Host disposer, which only stops the child process. This UI
@@ -570,29 +570,6 @@ window.__ModuleLoader__.load({
         })
       }
 
-      async function onSync() {
-        await withAction('sync', async () => {
-          notify('info', '正在同步模型到 DSH。')
-          try {
-            const data = await apiPost('/sync-models', {})
-            if (!data.ok) {
-              // An empty Magpie gateway catalog is a normal state (no providers
-              // configured in the Magpie GUI yet) — show it as a neutral hint.
-              if (String(data.error || '').includes('no models')) {
-                notify('info', 'Magpie 网关暂无可用模型，请先在 Magpie 界面中配置供应商与模型。')
-              } else {
-                throw new Error(data.error || 'sync failed')
-              }
-            } else {
-              notify('success', `已同步 ${data.count ?? 0} 个模型到 DSH`)
-            }
-            await refresh({ silent: true })
-          } catch (err) {
-            notify('error', `同步模型失败：${err?.message ?? err}`)
-          }
-        })
-      }
-
       function onUninstallEngine() {
         setConfirmUninstall(true)
       }
@@ -690,10 +667,6 @@ window.__ModuleLoader__.load({
             className: btnClass('outline', 'md'),
             style: dim('engine'), disabled: Boolean(busy) || !installed, onClick: onToggleEngine,
           }, btnContent('engine', info?.engineState === 'ready' ? '停止引擎' : '启动引擎')),
-          h('button', {
-            className: btnClass('outline', 'md'),
-            style: dim('sync'), disabled: Boolean(busy) || info?.engineState !== 'ready', onClick: onSync,
-          }, btnContent('sync', '同步模型到 DSH')),
           h('button', {
             className: btnClass('outline', 'md', 'danger'),
             style: dim('uninstall-engine'), disabled: Boolean(busy) || !installed,

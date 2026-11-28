@@ -15,11 +15,11 @@
   <!-- Window title bar -->
   <path d="M3 11 H33" stroke="#FFFFFF" stroke-opacity="0.42" stroke-width="1.2"/>
   <circle cx="7.2" cy="7.5" r="1.25" fill="#FFFFFF" fill-opacity="0.85"/>
-  <!-- Model slots discovered from the gateway -->
+  <!-- Panel slots representing managed model entries -->
   <rect x="7.5" y="15" width="8.5" height="6.5" rx="1.6" fill="#FFFFFF" fill-opacity="0.3"/>
   <rect x="20" y="15" width="8.5" height="6.5" rx="1.6" fill="#FFFFFF" fill-opacity="0.3"/>
   <rect x="7.5" y="24" width="8.5" height="5.5" rx="1.6" fill="#FFFFFF" fill-opacity="0.3"/>
-  <!-- Active model synced into DSH -->
+  <!-- Accent slot with status indicator -->
   <rect x="20" y="23" width="8.5" height="6.5" rx="1.6" fill="url(#dshMagpiePlug)"/>
   <circle cx="32" cy="26.25" r="1.8" fill="#4BE3A6"/>
 </svg>

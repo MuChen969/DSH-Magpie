@@ -19,8 +19,6 @@
  *   POST /api/dsh-magpie/install           start manual download (async)
  *   POST /api/dsh-magpie/uninstall-engine  manually remove the engine (keeps mirror settings)
  *   GET  /api/dsh-magpie/gui               embedded GUI URL (starts engine on demand)
- *   GET  /api/dsh-magpie/models            models discovered from the Magpie gateway
- *   POST /api/dsh-magpie/sync-models       (re)register models into DSH
  *   GET  /api/dsh-magpie/ui/*              reverse proxy to the official Web UI
  *   POST /api/dsh-magpie/start / stop / reset
  */
@@ -42,9 +40,6 @@ const SETTINGS_FILE = join(DSH_HOME, 'dsh-magpie-settings.json')
 // the one-time legacy migration is not repeated.
 const LEGACY_MIGRATION_MARKER = join(DSH_HOME, '.dsh-magpie-legacy-migrated')
 
-// The provider route name registered into @deepseek-ai/dsh-llm-pi-ai.
-const MODEL_PROVIDER_ID = 'magpie'
-const PI_AI_ENTRY_ID = 'llm-pi-ai'
 // Bundle package name, matched against the official operation event's target.
 const BUNDLE_PACKAGE = 'dsh-magpie'
 
@@ -106,13 +101,9 @@ async function migrateLegacyData(logger) {
   }
 }
 
-export const inject = ['webServer', 'configEditor']
+export const inject = ['webServer']
 
 export function apply(ctx) {
-  // Capture long-lived service references early; they are used by the async
-  // request handlers and remain valid for the plugin's lifetime.
-  const configEditor = ctx.configEditor
-
   // Migration must finish before any engine work.
   const migration = migrateLegacyData(ctx.logger).catch((error) => {
     ctx.logger?.warn?.(`[dsh-magpie] legacy data migration failed: ${String(error?.message ?? error)}`)
@@ -175,8 +166,8 @@ export function apply(ctx) {
   }
 
   // Remove every artifact this plugin created: the engine binary + private
-  // data, the GitHub mirror settings file, the migration marker and the model
-  // providers registered in DSH. Invoked only for a genuine uninstall.
+  // data, the GitHub mirror settings file and the migration marker.
+  // Invoked only for a genuine uninstall.
   async function purgeAll() {
     const { rm } = await import('node:fs/promises')
     let lastRmError = null
@@ -198,17 +189,11 @@ export function apply(ctx) {
       await rm(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
       await rm(SETTINGS_FILE, { force: true }).catch(() => {})
       await rm(LEGACY_MIGRATION_MARKER, { force: true }).catch(() => {})
-      syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
-      try {
-        await removeMagpieProviders()
-      } catch (error) {
-        ctx.logger?.warn?.(`[dsh-magpie] uninstall: provider cleanup failed: ${String(error?.message ?? error)}`)
-      }
       if (lastRmError) {
         ctx.logger?.warn?.(`[dsh-magpie] uninstall: data removal incomplete: ${String(lastRmError?.message ?? lastRmError)}`)
         return { ok: false, error: String(lastRmError?.message ?? lastRmError) }
       }
-      ctx.logger?.info?.('[dsh-magpie] uninstalled: engine, data, mirror settings and model providers removed')
+      ctx.logger?.info?.('[dsh-magpie] uninstalled: engine, data and mirror settings removed')
       return { ok: true }
     } catch (error) {
       ctx.logger?.warn?.(`[dsh-magpie] uninstall cleanup failed: ${String(error?.message ?? error)}`)
@@ -264,9 +249,8 @@ export function apply(ctx) {
     void purgeAll()
   })
 
-  // Bumped by install and reset so a long async operation (model sync, GUI
-  // proxy) can detect that the gateway port changed mid-flight and abort
-  // before writing a stale provider back into the config.
+  // Bumped by install and reset so a long async operation (GUI proxy) can
+  // detect that the gateway port changed mid-flight and abort.
   let operationEpoch = 0
   function epochChanged(epoch) {
     return epoch !== operationEpoch
@@ -300,7 +284,7 @@ export function apply(ctx) {
     }
     // CSRF defence for state-changing methods. Browsers attach Origin on
     // cross-site POST/PUT/...; a malicious page must not be able to drive
-    // /install, /start, /sync-models, etc. Requests without an Origin header
+    // /install, /start, etc. Requests without an Origin header
     // (curl, CLI tools) are not browser-CSRF-capable and pass.
     const method = String(req.method || 'GET').toUpperCase()
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
@@ -374,182 +358,6 @@ export function apply(ctx) {
     void appendDiag(join(DATA_DIR, 'host-diag.log'), `[${new Date().toISOString()}] ${line}\n`)
   }
 
-  // ---- Automatic model registration into DSH -------------------------------
-  let syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
-  let syncing = null
-
-  function magpieModelsToPiAi(models) {
-    return models.map((m) => {
-      const entry = {
-        id: String(m.id),
-        name: String(m.magpie_label || m.display_name || m.id),
-      }
-      const ctxWindow = Number(m.context_window || m.context_length || 0)
-      if (ctxWindow > 0) entry.contextWindow = ctxWindow
-      const maxTokens = Number(m.max_output_tokens || 0)
-      if (maxTokens > 0) entry.maxTokens = maxTokens
-      const input = Array.isArray(m.modalities?.input) ? m.modalities.input : []
-      if (input.length) entry.input = input
-      const levels = Array.isArray(m.reasoning_levels) ? m.reasoning_levels.filter(Boolean) : []
-      if (levels.length) {
-        const efforts = {}
-        const allowed = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
-        for (const level of levels) {
-          const key = String(level) === 'none' ? 'off' : String(level)
-          if (allowed.has(key)) efforts[key] = String(level)
-        }
-        if (Object.keys(efforts).length) entry.reasoningEfforts = efforts
-      }
-      return entry
-    })
-  }
-
-  async function syncModels({ force = false } = {}) {
-    if (syncing) return syncing
-    const epoch = operationEpoch
-    syncing = (async () => {
-      try {
-        if (engine.isInstalling()) return { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' }
-        if (engine.status().state !== 'ready') await engine.start()
-        const status = engine.status()
-        if (status.state !== 'ready' || !status.gatewayUrl) {
-          throw new Error(`engine not ready (${status.state})`)
-        }
-        const gatewayBase = status.gatewayUrl.replace(/\/+$/, '')
-        const modelsRes = await fetch(`${gatewayBase}/models`, {
-          signal: AbortSignal.timeout(10000),
-        })
-        if (!modelsRes.ok) throw new Error(`models request failed: HTTP ${modelsRes.status}`)
-        const payload = await modelsRes.json()
-        const models = Array.isArray(payload?.data) ? payload.data : []
-        if (!models.length) throw new Error('Magpie gateway returned no models')
-
-        const modelsForPiAi = magpieModelsToPiAi(models)
-        const baseURL = `${gatewayBase}/v1`
-
-        // A reset or reinstall may have changed the gateway port while we were
-        // awaiting start()/fetch. Do not write a provider pointing at a stale port.
-        if (epochChanged(epoch)) return { ok: false, error: 'engine changed during model sync; retry' }
-
-        if (!force && syncState.synced && syncState.baseURL === baseURL
-            && syncState.count === modelsForPiAi.length) {
-          return { ok: true, changed: false, ...syncState }
-        }
-
-        const editor = ctx.configEditor
-        if (!editor) throw new Error('configEditor service is unavailable')
-        const entry = editor.entries().find((e) => e.options.id === PI_AI_ENTRY_ID)
-        if (!entry) throw new Error(`${PI_AI_ENTRY_ID} config entry is not available`)
-
-        await editor.edit(entry, (current) => {
-          // Re-check inside the (async) edit so a concurrent reset/reinstall
-          // that began after the outer check still wins.
-          if (epochChanged(epoch)) return current
-          const next = { ...current }
-          // Only mutate the user's own override providers. Spreading
-          // `inherited.providers` here would freeze lower-layer config into the
-          // override, blocking upstream updates and bloating the file.
-          const providers = {
-            ...((current.providers && typeof current.providers === 'object') ? current.providers : {}),
-          }
-          const prev = providers[MODEL_PROVIDER_ID] && typeof providers[MODEL_PROVIDER_ID] === 'object'
-            ? { ...providers[MODEL_PROVIDER_ID] } : {}
-          delete prev.apiKeyEnv
-          // pi-ai's openai-completions implementation refuses to dispatch ANY
-          // request without an apiKey or an Authorization header — even for a
-          // keyless loopback gateway (verified in the installed pi-ai source:
-          // getClientApiKey throws "No API key for provider" otherwise).
-          // Magpie's gateway is local and needs no real credential, so supply a
-          // harmless placeholder Authorization header. dsh-llm-pi-ai only
-          // requires headers to be Fetch-representable, and pi-ai treats a
-          // present, non-empty Authorization as satisfied. Keep any user-supplied
-          // headers, replacing only the (case-insensitive) authorization entry.
-          const prevHeaders = prev.headers && typeof prev.headers === 'object' ? prev.headers : {}
-          const headers = {}
-          for (const [name, value] of Object.entries(prevHeaders)) {
-            if (String(name).toLowerCase() !== 'authorization') headers[name] = value
-          }
-          headers.Authorization = 'Bearer magpie'
-          providers[MODEL_PROVIDER_ID] = {
-            ...prev,
-            displayName: 'Magpie',
-            api: 'openai-completions',
-            baseURL,
-            headers,
-            models: modelsForPiAi,
-          }
-          const anthropic = providers['magpie-anthropic']
-          if (anthropic && typeof anthropic === 'object') {
-            const nextAnthropic = { ...anthropic, baseURL: gatewayBase }
-            // Same keyless-route rule applies to anthropic-messages. Only add a
-            // placeholder when the user configured no credential of their own;
-            // never overwrite an existing apiKeyEnv / auth header.
-            const ah = nextAnthropic.headers && typeof nextAnthropic.headers === 'object'
-              ? nextAnthropic.headers : {}
-            const hasAuthHeader = Object.entries(ah).some(([name, value]) =>
-              ['authorization', 'x-api-key', 'cf-aig-authorization'].includes(String(name).toLowerCase())
-              && value != null && String(value).trim().length > 0)
-            if (nextAnthropic.apiKeyEnv === undefined && !hasAuthHeader) {
-              nextAnthropic.headers = { ...ah, Authorization: 'Bearer magpie' }
-            }
-            providers['magpie-anthropic'] = nextAnthropic
-          }
-          next.providers = providers
-          return next
-        })
-
-        // NOTE: intentionally does NOT touch `web-search-deepseek`. Rewriting
-        // that entry's baseURL and stripping apiKeyEnv was an undocumented
-        // side effect that broke users' web search and was not restored on
-        // uninstall. Magpie models are exposed only through the `magpie`
-        // provider above; web search configuration stays under user control.
-
-        if (epochChanged(epoch)) return { ok: false, error: 'engine changed during model sync; retry' }
-        syncState = { synced: true, at: new Date().toISOString(), count: modelsForPiAi.length, error: null, baseURL }
-        ctx.logger?.info?.(`[dsh-magpie] registered ${modelsForPiAi.length} Magpie models into DSH (${MODEL_PROVIDER_ID})`)
-        return { ok: true, changed: true, ...syncState }
-      } catch (error) {
-        syncState = { ...syncState, error: String(error?.message ?? error) }
-        ctx.logger?.warn?.(`[dsh-magpie] model sync failed: ${String(error?.message ?? error)}`)
-        return { ok: false, error: syncState.error }
-      } finally {
-        syncing = null
-      }
-    })()
-    return syncing
-  }
-
-  // Remove Magpie provider entries from the user's own config layer. Used by
-  // reset so a fresh instance does not leave a stale gateway baseURL behind.
-  // Only the override layer is touched; lower-layer providers stay inherited.
-  async function removeMagpieProviders() {
-    const editor = configEditor
-    if (!editor) return
-    let lastError = null
-    // A transient config-editor failure must not leave a Magpie provider
-    // pointing at a dead gateway port. Retry with a short backoff before
-    // giving up; the caller logs the final failure so it is not silent.
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        const entry = editor.entries().find((e) => e.options.id === PI_AI_ENTRY_ID)
-        if (!entry) return
-        await editor.edit(entry, (current) => {
-          const next = { ...current }
-          const providers = { ...((current.providers && typeof current.providers === 'object') ? current.providers : {}) }
-          delete providers[MODEL_PROVIDER_ID]
-          delete providers['magpie-anthropic']
-          next.providers = providers
-          return next
-        })
-        return
-      } catch (error) {
-        lastError = error
-        if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
-      }
-    }
-    throw lastError
-  }
-
   function registerRoute(route) {
     try {
       disposers.push(ctx.webServer.register(route))
@@ -579,7 +387,6 @@ export function apply(ctx) {
         install: s.install,
         settings: { ...settings },
         detection,
-        modelSync: { ...syncState },
       })
     },
   })
@@ -619,14 +426,9 @@ export function apply(ctx) {
       // Fire-and-forget: the UI polls /install/status for progress.
       void engine.install({ mirror }).then((result) => {
         // A reset or newer install may have started while the download was in
-        // flight; its epoch bump wins, so we must not reset sync state.
+        // flight; its epoch bump wins, so we must not apply stale results.
         if (epoch !== operationEpoch) return
-        // A reinstall can restart the engine on a new random gateway port,
-        // invalidating any previously registered model baseURL. Invalidate
-        // the sync state and bump the epoch so an in-flight sync cannot write
-        // a stale port back into the config.
         operationEpoch++
-        syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
         ctx.logger?.info?.(`[dsh-magpie] manual install finished: ${result.tag}`)
       }).catch((error) => {
         ctx.logger?.warn?.(`[dsh-magpie] manual install failed: ${String(error?.message ?? error)}`)
@@ -636,10 +438,9 @@ export function apply(ctx) {
   })
 
   // Manual "uninstall engine": remove only the engine binary and its private
-  // data, plus the model providers it registered. The plugin, its GitHub mirror
-  // settings and the migration marker are kept so the engine can be downloaded
-  // again without losing the user's configuration. Unlike purgeAll (whole
-  // bundle uninstall), this deliberately leaves SETTINGS_FILE in place.
+  // data. The plugin, its GitHub mirror settings and the migration marker are
+  // kept so the engine can be installed again without losing configuration.
+  // Unlike purgeAll (whole bundle uninstall), this leaves SETTINGS_FILE in place.
   registerRoute({
     kind: 'exact',
     path: '/api/dsh-magpie/uninstall-engine',
@@ -662,12 +463,6 @@ export function apply(ctx) {
           }
         }
         await rm(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
-        syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
-        try {
-          await removeMagpieProviders()
-        } catch (error) {
-          ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine: provider cleanup failed: ${String(error?.message ?? error)}`)
-        }
         if (lastRmError) {
           ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine: data removal incomplete: ${String(lastRmError?.message ?? lastRmError)}`)
           return sendJson(res, 500, {
@@ -675,7 +470,7 @@ export function apply(ctx) {
             error: `数据目录仍被占用，请稍后重试：${DATA_DIR}`,
           })
         }
-        ctx.logger?.info?.('[dsh-magpie] engine uninstalled: binary, data and model providers removed (mirror settings kept)')
+        ctx.logger?.info?.('[dsh-magpie] engine uninstalled: binary and data removed (mirror settings kept)')
         return sendJson(res, 200, { ok: true, uninstalled: true })
       } catch (error) {
         ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine failed: ${String(error?.message ?? error)}`)
@@ -701,7 +496,6 @@ export function apply(ctx) {
         gatewayUrl: s.gatewayUrl,
         dataDir: DATA_DIR,
         install: s.install,
-        modelSync: { ...syncState },
       })
     },
   })
@@ -719,37 +513,6 @@ export function apply(ctx) {
         }
       }
       sendJson(res, 200, { ok: true, url: `${UI_MOUNT}/` })
-    },
-  })
-
-  registerRoute({
-    kind: 'exact',
-    path: '/api/dsh-magpie/models',
-    handler: async (req, res) => {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
-      if (!admit(req, res)) return
-      if (engine.isInstalling()) return sendJson(res, 503, { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' })
-      try {
-        if (engine.status().state !== 'ready') await engine.start()
-        const base = engine.status().gatewayUrl.replace(/\/+$/, '')
-        const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(10000) })
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        const payload = await r.json()
-        sendJson(res, 200, { ok: true, models: magpieModelsToPiAi(payload?.data ?? []), sync: { ...syncState } })
-      } catch (error) {
-        sendJson(res, 502, { ok: false, error: String(error?.message ?? error) })
-      }
-    },
-  })
-
-  registerRoute({
-    kind: 'exact',
-    path: '/api/dsh-magpie/sync-models',
-    handler: async (req, res) => {
-      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
-      if (!admit(req, res)) return
-      const result = await syncModels({ force: true })
-      sendJson(res, result.ok ? 200 : 502, result)
     },
   })
 
@@ -836,25 +599,8 @@ export function apply(ctx) {
             await rm(join(DATA_DIR, 'magpie'), { recursive: true, force: true })
             if (epochChanged(epoch)) throw new Error('engine changed during reset; retry')
             const s = await engine.start()
-            // Restart uses a fresh random gateway port; invalidate model sync.
             operationEpoch++
-            syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
-            // Reset wipes Magpie's own config, so previously synced models are
-            // gone. Drop the stale provider first (it points at the dead port),
-            // then register whatever the fresh instance exposes — possibly
-            // nothing, in which case no provider is left behind.
-            try {
-              await removeMagpieProviders()
-            } catch (error) {
-              ctx.logger?.warn?.(`[dsh-magpie] provider cleanup after reset failed: ${String(error?.message ?? error)}`)
-            }
-            let sync = null
-            try {
-              sync = await syncModels({ force: true })
-            } catch (error) {
-              ctx.logger?.warn?.(`[dsh-magpie] model re-sync after reset failed: ${String(error?.message ?? error)}`)
-            }
-            sendJson(res, 200, { ok: true, state: s.state, guiUrl: `${UI_MOUNT}/`, sync })
+            sendJson(res, 200, { ok: true, state: s.state, guiUrl: `${UI_MOUNT}/` })
           }
         } catch (error) {
           sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
@@ -863,8 +609,8 @@ export function apply(ctx) {
     })
   }
 
-  // Load settings on activation. NO automatic engine start and NO automatic
-  // model sync — the user drives installation and startup from the UI.
+  // Load settings on activation. NO automatic engine start — the user drives
+  // installation and startup from the UI.
   void migration.then(() => loadSettings()).catch((error) => {
     ctx.logger?.warn?.(`[dsh-magpie] settings load failed: ${String(error?.message ?? error)}`)
   })
