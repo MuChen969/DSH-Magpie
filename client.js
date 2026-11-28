@@ -330,13 +330,18 @@ window.__ModuleLoader__.load({
 /* ---- Modal：对齐官方 Modal primitive（卸载引擎确认）---- */
 .dsh-magpie-modal-root{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px}
 .dsh-magpie-modal-mask{position:absolute;inset:0;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.46));backdrop-filter:var(--dsw-mask-blur,blur(2px));animation:dsh-magpie-modal-in var(--ds-transition-duration,.16s) var(--ds-ease-in-out,ease)}
-.dsh-magpie-modal{box-sizing:border-box;position:relative;z-index:1;display:flex;flex-direction:column;gap:20px;width:100%;max-width:420px;padding:0 0 20px;border-radius:var(--dsw-radius-panel,14px);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent,0 18px 48px rgba(0,0,0,.26));animation:dsh-magpie-modal-in var(--ds-transition-duration,.16s) var(--ds-ease-in-out,ease);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.6}
+.dsh-magpie-modal{box-sizing:border-box;position:relative;z-index:1;display:flex;flex-direction:column;width:100%;max-width:420px;border-radius:var(--dsw-radius-panel,14px);background:var(--dsw-alias-bg-overlay,var(--dsw-alias-bg-layer-2));box-shadow:var(--dsw-elevation-prominent,0 18px 48px rgba(0,0,0,.26));animation:dsh-magpie-modal-in var(--ds-transition-duration,.16s) var(--ds-ease-in-out,ease);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px}
 .dsh-magpie-modal:focus{outline:none}
-.dsh-magpie-modal__header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:20px 14px 8px 22px}
+/* 标题与描述同属一个紧凑内容组；按钮区与内容区分隔（官方 Modal 分组规范） */
+.dsh-magpie-modal__content{display:flex;flex-direction:column;gap:12px;padding:22px 24px 0}
+.dsh-magpie-modal__header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .dsh-magpie-modal__title{margin:0;font-size:16px;line-height:24px;font-weight:500;color:var(--dsw-alias-label-primary)}
-.dsh-magpie-modal__close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;border-radius:var(--dsw-radius-sm,5px);background:transparent;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:18px;line-height:1}
-.dsh-magpie-modal__desc{margin:0;padding:0 22px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
-.dsh-magpie-modal__footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:0 22px}
+.dsh-magpie-modal__close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-2px -4px 0 0;border:none;border-radius:var(--dsw-radius-sm,5px);background:transparent;cursor:pointer;color:var(--dsw-alias-label-secondary)}
+@media(hover:hover){.dsh-magpie-modal__close:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}}
+.dsh-magpie-modal__desc{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.dsh-magpie-modal__footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:28px 24px 24px}
+/* 危险确认按钮：与官方 dangerButton 一致，将 primary 填充覆盖为错误色 */
+.dsh-magpie-modal__confirm{--dsw-alias-button-primary-fill:var(--dsw-alias-state-error-primary);--dsw-alias-button-primary-hover:var(--dsw-alias-state-error-primary)}
 @keyframes dsh-magpie-modal-in{0%{opacity:0}100%{opacity:1}}
 
 /* ---- Toast：对齐官方 Toast primitive（顶部居中浮层，宽度随内容）---- */
@@ -360,8 +365,9 @@ window.__ModuleLoader__.load({
     }
 
     // ---- 卸载引擎确认框：对齐官方插件管理页 ConfirmDialog -----------------
-    // 官方风格：标题「卸载「X」？」+ 一行描述；取消用 outline，确认用
-    // primary + danger；打开时聚焦、Esc 关闭、焦点回到触发元素。
+    // 官方风格：标题「卸载「X」？」无图标 + 一句精准描述；标题与描述成组，
+    // 按钮区右对齐并分隔；取消 outline、确认 primary 覆盖为错误色；
+    // 打开时聚焦取消、Esc 关闭、焦点回到触发元素。
     function TrashIcon({ size = 13 }) {
       return h('span', {
         'aria-hidden': true,
@@ -406,27 +412,34 @@ window.__ModuleLoader__.load({
         h('div', {
           ref: panelRef,
           className: 'dsh-magpie-modal',
-          role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dsh-magpie-uninstall-engine-title',
+          role: 'dialog', 'aria-modal': 'true',
+          'aria-labelledby': 'dsh-magpie-uninstall-engine-title',
+          'aria-describedby': 'dsh-magpie-uninstall-engine-desc',
           tabIndex: -1,
           onClick: (event) => event.stopPropagation(),
         },
-          h('div', { className: 'dsh-magpie-modal__header' },
-            h('h2', { id: 'dsh-magpie-uninstall-engine-title', className: 'dsh-magpie-modal__title' },
-              h('span', { style: { verticalAlign: '-4px', marginRight: '8px' } }, h(TrashIcon, { size: 16 })),
-              '卸载「Magpie 引擎」？'),
-            h('button', {
-              type: 'button', className: 'dsh-magpie-modal__close', 'aria-label': '关闭',
-              disabled: busy, onClick: onCancel,
-            }, '×'),
+          h('div', { className: 'dsh-magpie-modal__content' },
+            h('div', { className: 'dsh-magpie-modal__header' },
+              h('h2', { id: 'dsh-magpie-uninstall-engine-title', className: 'dsh-magpie-modal__title' }, '卸载「Magpie 引擎」？'),
+              h('button', {
+                type: 'button', className: 'dsh-magpie-modal__close', 'aria-label': '关闭',
+                disabled: busy, onClick: onCancel,
+                dangerouslySetInnerHTML: {
+                  __html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+                },
+              }),
+            ),
+            h('p', { id: 'dsh-magpie-uninstall-engine-desc', className: 'dsh-magpie-modal__desc' },
+              '移除引擎程序及其运行数据，保留 GitHub 镜像配置。'),
           ),
-          h('p', { className: 'dsh-magpie-modal__desc' }, '此操作将移除引擎程序及其运行数据；GitHub 镜像配置予以保留，可重新安装引擎。'),
           h('div', { className: 'dsh-magpie-modal__footer' },
             h('button', {
               ref: cancelRef, className: btnClass('outline', 'md'),
               disabled: busy, onClick: onCancel,
             }, '取消'),
             h('button', {
-              className: btnClass('danger', 'solid', 'md'), disabled: busy, onClick: onConfirm,
+              className: btnClass('primary', 'md') + ' dsh-magpie-modal__confirm',
+              disabled: busy, onClick: onConfirm,
             }, busy ? h('span', {}, h(Spinner, { small: true }), '卸载中。') : '卸载引擎'),
           )
         )
