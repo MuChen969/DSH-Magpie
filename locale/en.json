@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Model workbench",
-    "description": "Adds a Model workbench entry to the DeepSeek Harness sidebar, showing the official Magpie GUI in the main area. The bundle page includes an install card: manually download and verify the official Magpie binary from GitHub, configure a permanent GitHub mirror, and detect other Magpie plugins inside DSH to avoid duplicates. The engine runs in a DSH-managed private directory with random ports and starts on demand; models can be synced to the DSH picker manually. Bundle removal follows DSH's official plugin lifecycle: a genuine uninstall detected through the official event cleans up the engine, data, GitHub mirror config and model providers, leaving no residue; updates and disabling keep all data.",
+    "description": "Adds a Model workbench entry to the DeepSeek Harness sidebar, showing the official Magpie GUI in the main area. The bundle page includes an install card: manually download and verify the official Magpie binary from GitHub, configure a permanent GitHub mirror, and detect other Magpie plugins inside DSH to avoid duplicates. The engine runs in a DSH-managed private directory with random ports and starts on demand; models can be synced to the DSH picker manually. An Uninstall engine button lets you remove the engine and its data while keeping the GitHub mirror config for reinstallation. Bundle removal follows DSH's official plugin lifecycle: a genuine uninstall detected through the official event cleans up the engine, data, mirror config and model providers, leaving no residue; updates and disabling keep all data.",
     "detail": "docs/DETAIL.md"
   }
 }

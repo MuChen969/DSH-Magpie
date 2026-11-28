@@ -17,6 +17,7 @@
  *   GET  /api/dsh-magpie/install/status    install state, mirror, duplicate detection
  *   POST /api/dsh-magpie/install/config    save GitHub mirror / settings
  *   POST /api/dsh-magpie/install           start manual download (async)
+ *   POST /api/dsh-magpie/uninstall-engine  manually remove the engine (keeps mirror settings)
  *   GET  /api/dsh-magpie/gui               embedded GUI URL (starts engine on demand)
  *   GET  /api/dsh-magpie/models            models discovered from the Magpie gateway
  *   POST /api/dsh-magpie/sync-models       (re)register models into DSH
@@ -632,6 +633,55 @@ export function apply(ctx) {
         ctx.logger?.warn?.(`[dsh-magpie] manual install failed: ${String(error?.message ?? error)}`)
       })
       sendJson(res, 202, { ok: true, accepted: true })
+    },
+  })
+
+  // Manual "uninstall engine": remove only the engine binary and its private
+  // data, plus the model providers it registered. The plugin, its GitHub mirror
+  // settings and the migration marker are kept so the engine can be downloaded
+  // again without losing the user's configuration. Unlike purgeAll (whole
+  // bundle uninstall), this deliberately leaves SETTINGS_FILE in place.
+  registerRoute({
+    kind: 'exact',
+    path: '/api/dsh-magpie/uninstall-engine',
+    handler: async (req, res) => {
+      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
+      if (!admit(req, res)) return
+      const { rm } = await import('node:fs/promises')
+      let lastRmError = null
+      try {
+        try { await engine.stop() } catch { /* best effort */ }
+        // Windows keeps file handles briefly after the child exits; retry.
+        for (let attempt = 0; attempt < 10; attempt++) {
+          try {
+            await rm(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+            lastRmError = null
+            break
+          } catch (error) {
+            lastRmError = error
+            await new Promise((resolve) => setTimeout(resolve, 300))
+          }
+        }
+        await rm(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
+        syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
+        try {
+          await removeMagpieProviders()
+        } catch (error) {
+          ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine: provider cleanup failed: ${String(error?.message ?? error)}`)
+        }
+        if (lastRmError) {
+          ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine: data removal incomplete: ${String(lastRmError?.message ?? lastRmError)}`)
+          return sendJson(res, 500, {
+            ok: false,
+            error: `数据目录仍被占用，请稍后重试：${DATA_DIR}`,
+          })
+        }
+        ctx.logger?.info?.('[dsh-magpie] engine uninstalled: binary, data and model providers removed (mirror settings kept)')
+        return sendJson(res, 200, { ok: true, uninstalled: true })
+      } catch (error) {
+        ctx.logger?.warn?.(`[dsh-magpie] uninstall-engine failed: ${String(error?.message ?? error)}`)
+        return sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
+      }
     },
   })
 

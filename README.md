@@ -27,6 +27,7 @@
 | **🧩 独立内置实例** | 引擎运行在 DSH 管理的私有目录，端口随机分配，不调用、不干扰本机外部安装的 Magpie。 |
 | **🔌 模型接入 DSH** | 引擎就绪后手动同步，把网关模型注册为 DSH 的 `magpie` provider，随即可在模型选择器中使用；网关地址随端口自动更新。 |
 | **⚡ 按需启停** | 可手动启动/停止，打开模型工作台时也会按需启动，不随 DSH 自动运行。 |
+| **🗑️ 手动卸载引擎** | 插件详情页提供「卸载引擎」按钮：删除引擎二进制、私有数据与模型 provider，**保留** GitHub 镜像配置，可随时重新下载安装。 |
 | **🧹 卸载遵循 DSH 官方机制** | 从 DSH 插件面板卸载本插件时，插件通过官方 `plugin-manager/operation` 事件识别真实卸载（`settled/remove/applied`），随后停止 Magpie 子进程并清理引擎二进制、私有数据目录、GitHub 镜像配置与模型 provider；更新、禁用、HMR 重载与 DSH 关闭不会触发清理。 |
 
 插件界面沿用 DSH 官方设计语言：控件样式基于宿主 token，侧边栏图标为线性描边风格，与原生入口保持一致；官方引擎 GUI 本身不做任何改动。
@@ -60,7 +61,8 @@
 3. 下载完成后点击「启动引擎」，或直接从侧边栏打开「模型工作台」按需启动。
 4. 点击「同步模型到 DSH」，把网关模型注册到 DSH 模型选择器。
 5. 在 DSH 的模型选择器中选择 `Magpie` provider 下的模型即可对话。
-6. 需要移除本插件时，在 DSH 的插件面板中卸载即可。卸载遵循 DSH 官方插件生命周期：插件监听官方卸载事件，在真实卸载完成后自动停止 Magpie 子进程，并清理 `~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json`、迁移标记以及 DSH 中的 magpie 模型 provider，做到零残留。更新、禁用、HMR 重载与 DSH 关闭不会删除数据。
+6. 仅移除引擎而保留插件时，在插件详情页点击「卸载引擎」并确认：会删除引擎二进制、私有数据与模型 provider，但**保留 GitHub 镜像配置**，之后点击「下载并安装」即可重新获取引擎。
+7. 需要移除本插件时，在 DSH 的插件面板中卸载即可。卸载遵循 DSH 官方插件生命周期：插件监听官方卸载事件，在真实卸载完成后自动停止 Magpie 子进程，并清理 `~/.dsh/dsh-magpie-engine`、`~/.dsh/magpie-shell-engine`、`~/.dsh/dsh-magpie-settings.json`、迁移标记以及 DSH 中的 magpie 模型 provider，做到零残留。更新、禁用、HMR 重载与 DSH 关闭不会删除数据。
 
 ## 本地接口
 
@@ -71,6 +73,7 @@
 | `GET /api/dsh-magpie/install/status` | 安装状态、镜像配置、重复安装检测 |
 | `GET` / `POST /api/dsh-magpie/install/config` | 读取 / 保存 GitHub 镜像配置 |
 | `POST /api/dsh-magpie/install` | 手动触发下载安装（异步，轮询 status 查看进度） |
+| `POST /api/dsh-magpie/uninstall-engine` | 手动卸载引擎：删除引擎二进制、私有数据与模型 provider，**保留** GitHub 镜像配置 |
 | `GET /api/dsh-magpie/status` | 引擎状态与模型同步状态 |
 | `GET /api/dsh-magpie/gui` | 获取界面地址，必要时按需启动 |
 | `GET /api/dsh-magpie/models` | 查看从网关发现的模型 |
