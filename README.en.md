@@ -27,7 +27,7 @@ Add a **Model workbench** entry to the DSH sidebar. Clicking it shows the offici
 | **🧩 Self-contained instance** | The engine runs in a DSH-managed private directory with random ports; it never calls or interferes with an external Magpie installation. |
 | **🔌 Model registration** | Once ready, sync models on demand to register them as the `magpie` provider in DSH, available in the model picker. Gateway address follows port changes automatically. |
 | **⚡ On-demand start/stop** | Start or stop manually, or start automatically when opening the workbench; no autostart with DSH. |
-| **🧹 Uninstall follows DSH's official mechanism** | The plugin never deletes local data itself. When you remove the bundle from the DSH plugin panel, DSH calls the plugin's disposer: it only stops the Magpie child process and unregisters routes/listeners. The engine binary, data directory, mirror config and model provider are left intact for the user to manage. |
+| **🧹 Uninstall follows DSH's official mechanism** | When you remove the bundle from the DSH plugin panel, the plugin detects the genuine uninstall through the official `plugin-manager/operation` event (`settled/remove/applied`) and then stops the Magpie child process and removes the engine binary, private data directory, GitHub mirror config and model providers. Updates, disabling, HMR reloads and DSH shutdown do not trigger cleanup. |
 
 The plugin UI follows DSH's official design language: controls use host theme tokens and the sidebar glyph is an outlined icon matching native entries. The official engine GUI itself is left untouched.
 
@@ -60,7 +60,7 @@ Requires a working DeepSeek Harness (DSH) installation. Install only through the
 3. After download, click **Start engine**, or open **Model workbench** from the sidebar to start on demand.
 4. Click **Sync models to DSH** to register gateway models into the DSH model picker.
 5. Select a model under the `Magpie` provider in the DSH model picker to chat.
-6. To remove this plugin, uninstall it from DSH's plugin panel. Removal follows DSH's official plugin lifecycle: it only stops the Magpie child process and unregisters plugin resources — it does **not** delete `~/.dsh/dsh-magpie-engine`, `dsh-magpie-settings.json` or other local data. Delete those files manually if you want a full disk cleanup. Updating the plugin keeps all data.
+6. To remove this plugin, uninstall it from DSH's plugin panel. Removal follows DSH's official plugin lifecycle: the plugin watches the official uninstall event and, once the removal settles, stops the Magpie child process and removes `~/.dsh/dsh-magpie-engine`, `~/.dsh/magpie-shell-engine`, `~/.dsh/dsh-magpie-settings.json`, the migration marker and the magpie model providers in DSH — leaving no residue. Updates, disabling, HMR reloads and DSH shutdown keep all data.
 
 ## Local API
 
@@ -85,7 +85,7 @@ See [docs/DETAIL.md](docs/DETAIL.md) for more implementation details.
 |---|---|
 | Engine download is slow or fails | Set a working GitHub mirror prefix and retry; official GitHub must still be reachable for checksums. |
 | Workbench says the engine is not installed | Click **Go to install** in the panel to open this plugin's detail page directly. |
-| Files remain after uninstall | This is expected: by DSH's official plugin lifecycle, removing a plugin does not delete local data. For a full cleanup, delete manually: `~/.dsh/dsh-magpie-engine`, `~/.dsh/magpie-shell-engine`, `~/.dsh/dsh-magpie-settings.json`, `~/.dsh/.dsh-magpie-legacy-migrated`. |
+| Files remain after uninstall | Uninstall removes the engine, data, mirror config and model providers; on Windows a brief file lock is retried. If residue remains after a moment, delete manually: `~/.dsh/dsh-magpie-engine`, `~/.dsh/magpie-shell-engine`, `~/.dsh/dsh-magpie-settings.json`, `~/.dsh/.dsh-magpie-legacy-migrated`. |
 | No Magpie models in the picker | Start the engine, then click **Sync models to DSH**; if the gateway has no models yet, configure providers/models in the Magpie GUI first. |
 | Another Magpie plugin detected | This plugin uses a fully independent instance (own directory and random ports), so there is no conflict; decide whether you need two instances. |
 | UI did not update after code changes | Press DSH's refresh button once (or restart DSH) to load the latest plugin code. |

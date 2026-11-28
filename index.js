@@ -1,12 +1,16 @@
 /**
  * @local/dsh-magpie — Host half (manual-install edition).
  *
- * Uninstall follows DSH's official plugin contract: apply() returns a disposer
- * that only tears down what this plugin registered (HTTP routes, event
- * listeners, the running child process). DSH invokes that disposer on bundle
- * uninstall, update, disable and shutdown. The plugin never deletes files
- * under DSH_HOME on its own — removing the bundle is handled entirely by the
- * DSH plugin manager.
+ * Uninstall follows DSH's official plugin lifecycle. apply() returns a disposer
+ * that tears down what this plugin registered (HTTP routes, event listeners,
+ * the running child process); DSH calls it on uninstall, update, disable and
+ * shutdown. To additionally remove the engine binary, its data and the GitHub
+ * mirror config ONLY on a genuine bundle uninstall, we listen to the two
+ * official events from @deepseek-ai/dsh-plugin-manager:
+ *   - 'plugin-manager/update-state' marks an in-progress update (step=removing)
+ *   - 'plugin-manager/operation' reports settled(remove, applied, target=self)
+ * An update also runs a remove internally, but it is preceded by update-state,
+ * so it is excluded. No globalThis, cwd probing or fixed delays are used.
  *
  * HTTP routes (loopback only, under the DSH origin):
  *   GET  /api/dsh-magpie/status            engine + install status
@@ -40,6 +44,8 @@ const LEGACY_MIGRATION_MARKER = join(DSH_HOME, '.dsh-magpie-legacy-migrated')
 // The provider route name registered into @deepseek-ai/dsh-llm-pi-ai.
 const MODEL_PROVIDER_ID = 'magpie'
 const PI_AI_ENTRY_ID = 'llm-pi-ai'
+// Bundle package name, matched against the official operation event's target.
+const BUNDLE_PACKAGE = 'dsh-magpie'
 
 const DEFAULT_SETTINGS = {
   mirror: DEFAULT_MIRROR,
@@ -149,6 +155,113 @@ export function apply(ctx) {
   })
 
   const disposers = []
+
+  // ---- Official-uninstall driven cleanup -----------------------------------
+  // DSH's plugin manager exposes two official events (see @deepseek-ai/
+  // dsh-plugin-manager). We use them to tell a genuine bundle uninstall apart
+  // from an update (which internally also removes the bundle) and from a plain
+  // disable / HMR reload / shutdown. State lives in this activation's closure;
+  // listeners live on the root context so they survive our own disposal long
+  // enough to observe the settled event, which arrives AFTER pnpm remove.
+  const eventHost = ctx.root ?? ctx
+  let removeStarted = false
+  let updateRemoving = false
+  let purgeDone = false
+
+  function disposeUninstallEvents() {
+    try { disposeUpdateState?.() } catch { /* best effort */ }
+    try { disposeOperation?.() } catch { /* best effort */ }
+  }
+
+  // Remove every artifact this plugin created: the engine binary + private
+  // data, the GitHub mirror settings file, the migration marker and the model
+  // providers registered in DSH. Invoked only for a genuine uninstall.
+  async function purgeAll() {
+    const { rm } = await import('node:fs/promises')
+    let lastRmError = null
+    try {
+      try { await engine.stop() } catch { /* best effort */ }
+      try { await engine.close() } catch { /* best effort */ }
+      // Windows keeps file handles briefly after the child exits; retry before
+      // giving up so a transient lock does not strand the ~100 MB binary.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          await rm(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+          lastRmError = null
+          break
+        } catch (error) {
+          lastRmError = error
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        }
+      }
+      await rm(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {})
+      await rm(SETTINGS_FILE, { force: true }).catch(() => {})
+      await rm(LEGACY_MIGRATION_MARKER, { force: true }).catch(() => {})
+      syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
+      try {
+        await removeMagpieProviders()
+      } catch (error) {
+        ctx.logger?.warn?.(`[dsh-magpie] uninstall: provider cleanup failed: ${String(error?.message ?? error)}`)
+      }
+      if (lastRmError) {
+        ctx.logger?.warn?.(`[dsh-magpie] uninstall: data removal incomplete: ${String(lastRmError?.message ?? lastRmError)}`)
+        return { ok: false, error: String(lastRmError?.message ?? lastRmError) }
+      }
+      ctx.logger?.info?.('[dsh-magpie] uninstalled: engine, data, mirror settings and model providers removed')
+      return { ok: true }
+    } catch (error) {
+      ctx.logger?.warn?.(`[dsh-magpie] uninstall cleanup failed: ${String(error?.message ?? error)}`)
+      return { ok: false, error: String(error?.message ?? error) }
+    }
+  }
+
+  const disposeUpdateState = eventHost.on('plugin-manager/update-state', (progress) => {
+    // Only an update announces step='removing' before it removes this bundle.
+    if (progress && progress.step === 'removing') updateRemoving = true
+  })
+
+  const disposeOperation = eventHost.on('plugin-manager/operation', (op) => {
+    if (!op || typeof op !== 'object') return
+    const reason = op.reason
+    const stage = op.stage
+    // An install/re-enable supersedes any pending removal (update restore path).
+    if (reason === 'install' || stage === 'enable') {
+      removeStarted = false
+      updateRemoving = false
+      return
+    }
+    if (reason !== 'remove' || stage !== 'remove') return
+    const target = String(op.target ?? '')
+    // The manager reports the bare package name for a remove; tolerate an
+    // empty/null target while a removal for this bundle is already pending.
+    if (target !== BUNDLE_PACKAGE && !(target === '' && removeStarted)) return
+    if (op.phase === 'started') {
+      removeStarted = true
+      return
+    }
+    if (op.phase === 'unknown') {
+      removeStarted = false
+      updateRemoving = false
+      return
+    }
+    if (op.phase !== 'settled') return
+    if (op.application === 'failed' || op.application === 'cancelled') {
+      removeStarted = false
+      updateRemoving = false
+      return
+    }
+    const genuine = removeStarted && !updateRemoving && op.application === 'applied'
+    removeStarted = false
+    updateRemoving = false
+    if (!genuine || purgeDone) {
+      // Update / unrelated remove — no data purge; drop our root listeners.
+      disposeUninstallEvents()
+      return
+    }
+    purgeDone = true
+    disposeUninstallEvents()
+    void purgeAll()
+  })
 
   // Bumped by install and reset so a long async operation (model sync, GUI
   // proxy) can detect that the gateway port changed mid-flight and abort
@@ -708,13 +821,19 @@ export function apply(ctx) {
   })
 
   // DSH's official plugin contract: apply() returns a disposer that DSH calls
-  // on bundle uninstall, update, disable, HMR reload and shutdown. Following
-  // that contract, we only tear down what this plugin registered — HTTP routes
-  // and the running Magpie child process. We never delete files under DSH_HOME:
-  // uninstalling the bundle is handled entirely by DSH's plugin manager, and
-  // the engine/data/settings remain under the user's control.
+  // on bundle uninstall, update, disable, HMR reload and shutdown. It tears
+  // down only what this plugin registered — HTTP routes and the running child
+  // process. Data cleanup is NOT done here because this disposer also runs on
+  // updates/reloads; it is driven by the official operation event above, whose
+  // 'settled' phase arrives only after pnpm has finished the uninstall.
   return () => {
     for (const disposer of disposers) disposer()
-    void engine.close()
+    void engine.stop()
+    // The disposer runs during the remove phase, BEFORE the settled event is
+    // emitted. While a removal is pending we must keep the root listeners alive
+    // so the settled handler can still perform the purge. For every other
+    // teardown (disable / update / HMR / shutdown with no pending removal),
+    // drop them here to avoid leaking listeners on the root context.
+    if (!removeStarted) disposeUninstallEvents()
   }
 }
