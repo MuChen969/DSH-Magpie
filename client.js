@@ -68,6 +68,104 @@ window.__ModuleLoader__.load({
       return r.json()
     }
 
+    // ---- 共享引擎状态 -------------------------------------------------------
+    // 侧边栏状态点与插件页安装卡片共用同一份状态快照。本地发起的启停操作
+    // 先发布过渡态，请求完成后立即发布真实状态，避免极快启停时轮询错过变化。
+    const statusState = { snapshot: null, failed: false, listeners: new Set() }
+
+    function publishStatus(info, failed = false) {
+      statusState.snapshot = info
+      statusState.failed = Boolean(failed)
+      for (const fn of statusState.listeners) {
+        try { fn(statusState.snapshot, statusState.failed) } catch { /* 单个订阅者异常不影响其他订阅者 */ }
+      }
+    }
+
+    function subscribeStatus(fn) {
+      statusState.listeners.add(fn)
+      fn(statusState.snapshot, statusState.failed)
+      return () => { statusState.listeners.delete(fn) }
+    }
+
+    async function refreshStatus() {
+      try {
+        const info = await apiGet('/install/status')
+        publishStatus(info, !info || info.ok === false)
+        return info
+      } catch {
+        publishStatus(null, true)
+        return null
+      }
+    }
+
+    // 本地操作进行中时发布过渡态；保留其余字段以维持状态点语义。
+    function publishTransient(engineState) {
+      const base = statusState.snapshot && typeof statusState.snapshot === 'object'
+        ? statusState.snapshot
+        : { ok: true, installed: true }
+      publishStatus({ ...base, ok: true, engineState }, false)
+    }
+
+    // ---- 侧边栏入口：带引擎状态点的图标 ------------------------------------
+    // 状态点严格复用 DSH 主题 token，叠加在官方线性图标右下角；
+    // 组件订阅共享状态，由本地操作即时推送状态变化，不依赖定时轮询。
+    // 样式在此组件内注入：侧边栏条目不经过 WorkbenchPanel / InstallCard，
+    // 因此不能依赖它们内部的 <Styles>。
+    const SIDEBAR_STATUS_CSS = `
+.dsh-magpie-side-dot{position:absolute;right:-2px;bottom:-2px;width:6px;height:6px;border-radius:50%;box-shadow:0 0 0 1.5px var(--dsw-alias-bg-base,var(--dsw-alias-bg-layer-1));pointer-events:none}
+.dsh-magpie-side-dot[data-tone='success']{background:var(--dsw-alias-state-success-primary)}
+.dsh-magpie-side-dot[data-tone='warn']{background:var(--dsw-alias-state-warn-primary)}
+.dsh-magpie-side-dot[data-tone='error']{background:var(--dsw-alias-state-error-primary)}
+.dsh-magpie-side-dot[data-tone='business']{background:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary))}
+.dsh-magpie-side-dot[data-tone='dimmed']{background:var(--dsw-alias-label-dimmed)}
+.dsh-magpie-side-dot--pulse{animation:dsh-magpie-side-dot-pulse 1.1s var(--ds-ease-in-out,ease) infinite alternate}
+@keyframes dsh-magpie-side-dot-pulse{from{opacity:.45}to{opacity:1}}
+`
+
+    // Map the install-status payload to a status dot. Returns null when the
+    // engine binary is not installed (no dot), so the rail keeps its plain
+    // official glyph until Magpie is actually present. Each state carries a
+    // concise label for assistive technology and hover title.
+    function sidebarStatus(info, failed) {
+      if (failed || !info || info.ok === false) return { tone: 'dimmed', label: '状态获取失败' }
+      if (!info.installed) return null
+      if (info.install && info.install.installing) return { tone: 'business', pulse: true, label: '引擎安装中' }
+      const state = info.engineState
+      if (state === 'ready') return { tone: 'success', label: '引擎运行中' }
+      if (state === 'starting') return { tone: 'business', label: '引擎启动中' }
+      if (state === 'stopped') return { tone: 'dimmed', label: '引擎已停止' }
+      return { tone: 'error', label: '引擎状态异常' }
+    }
+
+    function StatusAwareIcon(props) {
+      const raw = props && props.size
+      const size = typeof raw === 'number' && raw > 0 ? raw : 18
+      const [status, setStatus] = React.useState(() => sidebarStatus(statusState.snapshot, statusState.failed))
+
+      React.useEffect(() => {
+        const unsubscribe = subscribeStatus((info, failed) => setStatus(sidebarStatus(info, failed)))
+        void refreshStatus()
+        return unsubscribe
+      }, [])
+
+      const svg = MAGPIE_SVG.replace('width="36" height="36"', `width="${size}" height="${size}"`)
+      return h('span', {
+        style: { position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: size, height: size, lineHeight: 0 },
+      },
+        h('style', {}, SIDEBAR_STATUS_CSS),
+        h('span', { 'aria-hidden': true, dangerouslySetInnerHTML: { __html: svg } }),
+        status
+          ? h('span', {
+              className: 'dsh-magpie-side-dot' + (status.pulse ? ' dsh-magpie-side-dot--pulse' : ''),
+              'data-tone': status.tone,
+              role: 'img',
+              'aria-label': status.label,
+              title: status.label,
+            })
+          : null,
+      )
+    }
+
     // ---- 模型工作台面板 ----------------------------------------------------
     function WorkbenchPanel() {
       const [url, setUrl] = React.useState(null)
@@ -151,12 +249,14 @@ window.__ModuleLoader__.load({
         // First check whether the embedded binary is installed at all.
         apiGet('/install/status').then((info) => {
           if (!alive) return
+          publishStatus(info, !info || info.ok === false)
           if (!info.ok) throw new Error(info.error || 'status failed')
           if (!info.installed) {
             setState('need-install')
             return
           }
           setState('starting')
+          publishTransient('starting')
           return fetch(GUI_API, { headers: { accept: 'application/json' } })
             .then((r) => r.json())
             .then((data) => {
@@ -165,6 +265,7 @@ window.__ModuleLoader__.load({
                 setUrl(data.url)
                 setError(null)
                 setState('ready')
+                void refreshStatus()
               } else {
                 throw new Error(data.error ?? '无法获取 Magpie 界面地址')
               }
@@ -179,7 +280,21 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'dsh-magpie-workbench' },
         h(Styles),
+        // 面板工具栏
+        h('div', { className: 'dsh-magpie-toolbar' },
+          h('button', {
+            className: btnClass('ghost', 'sm'),
+            onClick: openInstallPage,
+          }, '插件详情'),
+        ),
         error ? h('div', { className: 'dsh-magpie-notice dsh-magpie-notice--banner', 'data-tone': 'error', role: 'alert' }, error) : null,
+        navHint
+          ? h('div', {
+              role: 'status',
+              className: 'dsh-magpie-notice dsh-magpie-notice--banner',
+              'data-tone': 'info',
+            }, navHint)
+          : null,
         url
           ? h('iframe', {
               src: url,
@@ -197,14 +312,6 @@ window.__ModuleLoader__.load({
                   style: { marginTop: '4px' },
                   onClick: openInstallPage,
                 }, '安装引擎'),
-                navHint
-                  ? h('div', {
-                      role: 'status',
-                      className: 'dsh-magpie-notice dsh-magpie-notice--banner',
-                      'data-tone': 'info',
-                      style: { maxWidth: '420px', marginTop: '6px' },
-                    }, navHint)
-                  : null,
               )
             : state === 'checking'
               ? h('div', { className: 'dsh-magpie-center' }, '正在检查安装状态。')
@@ -278,6 +385,7 @@ window.__ModuleLoader__.load({
 .dsh-magpie-field__hint{font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
 @media(pointer:coarse){.dsh-magpie-field__input{font-size:16px}}
 
+
 /* ---- Tag：对齐官方 Tag primitive ---- */
 .dsh-magpie-tag{display:inline-flex;align-items:center;border-radius:999px;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;white-space:nowrap}
 .dsh-magpie-tag[data-tone='neutral']{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
@@ -304,6 +412,8 @@ window.__ModuleLoader__.load({
 
 /* ---- Section / 布局 ---- */
 .dsh-magpie-workbench{display:flex;flex-direction:column;height:100%;width:100%;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
+/* 面板工具栏：位于 iframe 上方，右对齐；复用官方 token 与细分隔线 */
+.dsh-magpie-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:none;min-height:36px;padding:4px 10px;border-bottom:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1)}
 .dsh-magpie-section{display:flex;flex-direction:column;gap:14px;color:var(--dsw-alias-label-primary)}
 .dsh-magpie-section__title{font-size:14px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary)}
 .dsh-magpie-section__desc{font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary)}
@@ -500,6 +610,7 @@ window.__ModuleLoader__.load({
         return apiGet('/install/status').then((data) => {
           if (!data.ok) throw new Error(data.error || 'status failed')
           setInfo(data)
+          publishStatus(data, false)
           // Only sync the mirror field for user-triggered/initial refreshes.
           // Silent polling during install must not clobber an address the user
           // is currently typing into the input.
@@ -548,6 +659,7 @@ window.__ModuleLoader__.load({
             const data = await apiPost('/install', {})
             if (!data.ok) throw new Error(data.error || 'install request failed')
             await refresh({ silent: true })
+            await refreshStatus()
             notify('success', '安装任务已提交')
           } catch (err) {
             notify('error', `安装失败：${err?.message ?? err}`)
@@ -570,15 +682,20 @@ window.__ModuleLoader__.load({
 
       async function onToggleEngine() {
         await withAction('engine', async () => {
-          const action = info?.engineState === 'ready' ? 'stop' : 'start'
-          notify('info', action === 'stop' ? '正在停止引擎。' : '正在启动引擎。')
+          const stopping = info?.engineState === 'ready'
+          const action = stopping ? 'stop' : 'start'
+          notify('info', stopping ? '正在停止引擎。' : '正在启动引擎。')
+          // Publish the transient state immediately so the sidebar dot reflects
+          // the operation even when start/stop completes within milliseconds.
+          publishTransient(stopping ? 'stopped' : 'starting')
           try {
             const data = await apiPost(`/${action}`, {})
             if (!data.ok) throw new Error(data.error || `${action} failed`)
             await refresh({ silent: true })
-            notify('success', action === 'stop' ? '引擎已停止' : '引擎已启动')
+            notify('success', stopping ? '引擎已停止' : '引擎已启动')
           } catch (err) {
-            notify('error', `${action === 'stop' ? '停止' : '启动'}引擎失败：${err?.message ?? err}`)
+            await refreshStatus()
+            notify('error', `${stopping ? '停止' : '启动'}引擎失败：${err?.message ?? err}`)
           }
         })
       }
@@ -595,6 +712,7 @@ window.__ModuleLoader__.load({
             const data = await apiPost('/uninstall-engine', {})
             if (!data.ok) throw new Error(data.error || 'uninstall engine failed')
             await refresh({ silent: true })
+            await refreshStatus()
             notify('success', 'Magpie 引擎已卸载，镜像配置已保留')
           } catch (err) {
             notify('error', `卸载引擎失败：${err?.message ?? err}`)
@@ -657,7 +775,7 @@ window.__ModuleLoader__.load({
               className: 'dsh-magpie-field__input',
               style: { flex: '1 1 320px', minWidth: '220px', width: 'auto' },
               value: mirror,
-              placeholder: '留空则使用官方 GitHub；例如 https://gh-proxy.com/',
+              placeholder: '默认使用官方 GitHub 地址。示例：https://gh-proxy.com/',
               onChange: (e) => setMirror(e.target.value),
               onKeyDown: (e) => { if (e.key === 'Enter' && !busy) void onSave() },
             }),
@@ -666,7 +784,7 @@ window.__ModuleLoader__.load({
               style: dim('save'), disabled: Boolean(busy), onClick: onSave,
             }, btnContent('save', '保存')),
           ),
-          h('div', { className: 'dsh-magpie-field__hint' }, '该地址作为下载链接前缀，保存后永久生效；留空则使用官方地址。'),
+          h('div', { className: 'dsh-magpie-field__hint' }, '填写镜像地址前缀，保存后生效。'),
         ),
 
         // actions
@@ -722,7 +840,7 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('sidebar.panellist', () =>
           ctx.slots.register(
             { name: 'sidebar.panellist', id: PANEL_ID, order: 8, label: '模型工作台' },
-            MagpieIcon,
+            StatusAwareIcon,
           ),
         )
         // Main panel showing the official Magpie GUI.
