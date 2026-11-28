@@ -139,7 +139,7 @@ window.__ModuleLoader__.load({
               (found) => {
                 setNavHint(found
                   ? null
-                  : '请在插件列表中找到 DSH-Magpie，打开详情页后即可下载并安装引擎。')
+                  : '请在插件列表中找到 DSH-Magpie，打开详情页后即可安装引擎。')
               },
             )
           },
@@ -191,7 +191,7 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'dsh-magpie-center' },
                 h('div', { className: 'dsh-magpie-section__title' }, 'Magpie 引擎尚未安装'),
                 h('div', { className: 'dsh-magpie-section__desc', style: { maxWidth: '360px' } },
-                  '点击下方按钮前往插件详情页，再点击「下载并安装」即可。'),
+                  '点击下方按钮前往插件详情页，再点击「安装引擎」即可。'),
                 h('button', {
                   className: btnClass('primary', 'md'),
                   style: { marginTop: '4px' },
@@ -535,9 +535,9 @@ window.__ModuleLoader__.load({
             const data = await apiPost('/install', {})
             if (!data.ok) throw new Error(data.error || 'install request failed')
             await refresh({ silent: true })
-            notify('success', info?.installed ? '已重新提交下载安装任务' : '下载安装任务已提交')
+            notify('success', '安装任务已提交')
           } catch (err) {
-            notify('error', `下载安装失败：${err?.message ?? err}`)
+            notify('error', `安装失败：${err?.message ?? err}`)
           }
         })
       }
@@ -631,7 +631,7 @@ window.__ModuleLoader__.load({
         installed
           ? h(InstalledStatus, { info })
           : h('div', { className: 'dsh-magpie-section__desc' },
-              '尚未安装内置 Magpie，点击下方按钮下载（经 SHA256 校验）。'),
+              '尚未安装内置 Magpie，点击下方按钮安装（经 SHA256 校验）。'),
 
         // duplicate detection — only other Magpie plugins inside DSH.
         info?.detection?.hasDuplicate
@@ -683,8 +683,9 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-magpie-row' },
           h('button', {
             className: btnClass('primary', 'md'),
-            style: dim('install'), disabled: Boolean(busy) || installing, onClick: onInstall,
-          }, btnContent('install', installing ? '正在下载…' : (installed ? '重新下载并安装' : '下载并安装'))),
+            style: dim('install'), disabled: Boolean(busy) || installing || installed, onClick: onInstall,
+            title: installed ? '引擎已安装，请先卸载引擎再安装' : undefined,
+          }, btnContent('install', installing ? '正在安装…' : '安装引擎')),
           h('button', {
             className: btnClass('outline', 'md'),
             style: dim('engine'), disabled: Boolean(busy) || !installed, onClick: onToggleEngine,

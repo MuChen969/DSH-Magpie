@@ -615,10 +615,9 @@ export function apply(ctx) {
       if (!admit(req, res)) return
       const body = await readBody(req)
       const mirror = body.mirror === undefined ? undefined : normalizeMirror(body.mirror)
-      const force = Boolean(body.force)
       const epoch = operationEpoch
       // Fire-and-forget: the UI polls /install/status for progress.
-      void engine.install({ mirror, force }).then((result) => {
+      void engine.install({ mirror }).then((result) => {
         // A reset or newer install may have started while the download was in
         // flight; its epoch bump wins, so we must not reset sync state.
         if (epoch !== operationEpoch) return

@@ -126,7 +126,7 @@ async function downloadToFile(url, dest, mirror, { timeout = 180000, onProgress 
  * platform, verify it against SHA256SUMS, and store it in the managed bin dir.
  * Returns { binary, tag, sha256, downloaded }.
  */
-async function ensureOfficialBinary(binDir, mirror, logger, onProgress, force = false) {
+async function ensureOfficialBinary(binDir, mirror, logger, onProgress) {
   const name = assetName()
   const dest = path.join(binDir, name)
 
@@ -175,9 +175,9 @@ async function ensureOfficialBinary(binDir, mirror, logger, onProgress, force = 
     .find((line) => line.endsWith(`  ${name}`))?.split(/\s+/)[0]
   if (!expected) throw engineError(`no SHA-256 entry for ${name} in official SHA256SUMS`)
 
-  // Reuse a verified local copy unless force=true. A forced reinstall
-  // re-downloads and re-verifies even when the cached copy is still valid.
-  if (!force && existsSync(dest)) {
+  // Reuse a verified local copy when its SHA-256 still matches the official
+  // manifest; otherwise re-download and re-verify.
+  if (existsSync(dest)) {
     try {
       const actual = await sha256File(dest)
       if (actual === expected) {
@@ -408,7 +408,7 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
    * Manual install. Downloads and verifies the official binary.
    * Concurrent calls share the same promise.
    */
-  async function install({ mirror, force = false } = {}) {
+  async function install({ mirror } = {}) {
     assertOpen()
     const useMirror = mirror == null ? (getMirror?.() || DEFAULT_MIRROR) : mirror
     if (installState.installing) throw engineError('installation already in progress')
@@ -429,11 +429,10 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
 
     try {
       // ensureOfficialBinary reuses the local copy only when its SHA-256 still
-      // matches the official manifest. force=true skips that reuse and
-      // re-downloads even when the cached copy is valid.
+      // matches the official manifest; otherwise it re-downloads and verifies.
       const result = await ensureOfficialBinary(binDir, useMirror, logger, (p) => {
         installState.progress = p
-      }, force)
+      })
       binary = result.binary
       installState = { installing: false, progress: null, lastResult: result, error: null }
       if (resumeAfter) {
