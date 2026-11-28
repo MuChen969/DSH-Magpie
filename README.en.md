@@ -38,7 +38,7 @@ Install & configuration card on the plugin detail page:
 
 - When installed: a status card with binary name, version and running/ready badge
 - When not installed: a **Download & install** entry
-- GitHub mirror config, start/stop, sync models and refresh status in one place
+- GitHub mirror config, start/stop, sync models and uninstall engine in one place
 
 Model workbench: sidebar entry → main-area iframe with the official Magpie GUI; if the engine is missing, the panel offers a direct jump back to this plugin's detail page.
 

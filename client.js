@@ -694,10 +694,6 @@ window.__ModuleLoader__.load({
             style: dim('sync'), disabled: Boolean(busy) || info?.engineState !== 'ready', onClick: onSync,
           }, btnContent('sync', '同步模型到 DSH')),
           h('button', {
-            className: btnClass('ghost', 'md'),
-            style: dim('refresh'), disabled: Boolean(busy), onClick: () => void refresh(),
-          }, btnContent('refresh', '刷新状态')),
-          h('button', {
             className: btnClass('outline', 'md', 'danger'),
             style: dim('uninstall-engine'), disabled: Boolean(busy) || !installed,
             'aria-label': '卸载 Magpie 引擎', onClick: onUninstallEngine,
