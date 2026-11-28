@@ -5,7 +5,11 @@
  * 2. Adds an installation / settings card to the bundle's own page in Plugins
  *    (slot `plugins.bundle.config`, key = package name). The card lets the user
  *    manually download the Magpie binary, configure a GitHub mirror, see a
- *    duplicate-install warning, and start/stop the engine.
+ *    duplicate-install warning, start/stop the engine and sync models.
+ *
+ * Uninstall is handled entirely by DSH's official plugin manager: removing this
+ * bundle calls the Host disposer, which only stops the child process. This UI
+ * never deletes data under DSH_HOME.
  */
 
 window.__ModuleLoader__.load({
@@ -323,22 +327,6 @@ window.__ModuleLoader__.load({
 .dsh-magpie-progress__fill--indeterminate{width:35%;animation:dsh-magpie-indeterminate 1.2s ease-in-out infinite}
 @keyframes dsh-magpie-indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 
-/* ---- Modal：对齐官方 Modal primitive ---- */
-.dsh-magpie-modal-root{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px}
-.dsh-magpie-modal-mask{position:absolute;inset:0;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.46));backdrop-filter:var(--dsw-mask-blur,blur(2px));animation:dsh-magpie-modal-in var(--ds-transition-duration,.16s) var(--ds-ease-in-out,ease)}
-.dsh-magpie-modal{box-sizing:border-box;position:relative;z-index:1;display:flex;flex-direction:column;gap:20px;width:100%;max-width:420px;padding:0 0 20px;border-radius:var(--dsw-radius-panel,14px);background:var(--dsw-alias-bg-layer-2);box-shadow:var(--dsw-elevation-prominent,0 18px 48px rgba(0,0,0,.26));animation:dsh-magpie-modal-in var(--ds-transition-duration,.16s) var(--ds-ease-in-out,ease);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.6}
-.dsh-magpie-modal:focus{outline:none}
-.dsh-magpie-modal__header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:20px 14px 8px 22px}
-.dsh-magpie-modal__title{margin:0;font-size:16px;line-height:24px;font-weight:500;color:var(--dsw-alias-label-primary)}
-.dsh-magpie-modal__close{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:none;border-radius:var(--dsw-radius-sm,5px);background:transparent;cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:18px;line-height:1}
-.dsh-magpie-modal__desc{margin:0;padding:0 22px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
-.dsh-magpie-modal__body{display:flex;flex-direction:column;gap:14px;min-width:0;padding:0 22px}
-.dsh-magpie-modal__footer{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:0 22px}
-.dsh-magpie-modal__hint{margin-right:auto;font-size:11px;color:var(--dsw-alias-label-secondary)}
-.dsh-magpie-modal__grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px}
-.dsh-magpie-modal__group-title{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--dsw-alias-label-secondary);margin-bottom:6px}
-@keyframes dsh-magpie-modal-in{0%{opacity:0}100%{opacity:1}}
-
 /* ---- Toast：对齐官方 Toast primitive（顶部居中浮层，宽度随内容）---- */
 .dsh-magpie-toast{position:fixed;top:40px;left:50%;z-index:1100;pointer-events:none;display:flex;align-items:center;gap:10px;width:max-content;max-width:min(640px,calc(100vw - 48px));padding:12px 16px;border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-toast-bg,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-toast-label,var(--dsw-alias-label-primary));box-shadow:var(--dsw-shadow-lv3,0 8px 24px rgba(0,0,0,.18));font-size:14px;line-height:22px;transform:translateX(-50%);animation:dsh-magpie-toast-in .16s ease-out}
 .dsh-magpie-toast[data-kind='error']{color:var(--dsw-alias-state-error-primary)}
@@ -346,7 +334,7 @@ window.__ModuleLoader__.load({
 @keyframes dsh-magpie-toast-in{0%{opacity:0;transform:translate(-50%,-6px)}100%{opacity:1;transform:translate(-50%,0)}}
 
 @media(prefers-reduced-motion:reduce){
-  .dsh-magpie-modal-mask,.dsh-magpie-modal,.dsh-magpie-toast{animation:none}
+  .dsh-magpie-toast{animation:none}
   .dsh-magpie-spinner,.dsh-magpie-progress__fill--indeterminate{animation:none}
 }
 `
@@ -357,127 +345,6 @@ window.__ModuleLoader__.load({
     }
     function Styles() {
       return h('style', {}, MAGPIE_CSS)
-    }
-
-    // ---- 卸载确认对话框 ----------------------------------------------------
-    // A themed replacement for window.confirm: a destructive, irreversible
-    // action deserves a scannable consequence list and a protected focus.
-    function WarningIcon({ size = 20 }) {
-      return h('span', {
-        'aria-hidden': true,
-        style: {
-          display: 'inline-flex', flex: '0 0 auto', width: size, height: size,
-          color: 'var(--dsw-alias-state-error-primary)', lineHeight: 0,
-        },
-        dangerouslySetInnerHTML: {
-          __html: `<svg style="display:block" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`,
-        },
-      })
-    }
-
-    function UninstallDialog({ onCancel, onConfirm, busy }) {
-      const cancelRef = React.useRef(null)
-      const panelRef = React.useRef(null)
-
-      React.useEffect(() => {
-        // Remember what had focus before the dialog opened and restore it only
-        // on true unmount (cancel / Esc / backdrop / confirm), independent of
-        // busy-state re-renders.
-        const previouslyFocused = document.activeElement
-        cancelRef.current?.focus()
-        return () => {
-          try { previouslyFocused?.focus?.() } catch { /* element may be gone */ }
-        }
-      }, [])
-
-      React.useEffect(() => {
-        const onKey = (event) => {
-          if (event.key === 'Escape' && !busy) {
-            event.preventDefault()
-            onCancel()
-            return
-          }
-          if (event.key === 'Tab') {
-            const items = panelRef.current?.querySelectorAll('button:not(:disabled)')
-            if (!items || items.length === 0) {
-              // All actions disabled (busy): keep focus inside the dialog.
-              event.preventDefault()
-              panelRef.current?.focus()
-              return
-            }
-            const first = items[0]
-            const last = items[items.length - 1]
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault()
-              last.focus()
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault()
-              first.focus()
-            }
-          }
-        }
-        window.addEventListener('keydown', onKey, true)
-        return () => window.removeEventListener('keydown', onKey, true)
-      }, [busy, onCancel])
-
-      return h('div', {
-        className: 'dsh-magpie-modal-root',
-        onClick: (event) => { if (event.target === event.currentTarget && !busy) onCancel() },
-      },
-        h('div', {
-          className: 'dsh-magpie-modal-mask', 'aria-hidden': true,
-          onClick: (event) => { if (!busy) onCancel() },
-        }),
-        h('div', {
-          ref: panelRef,
-          className: 'dsh-magpie-modal',
-          role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dsh-magpie-uninstall-title',
-          tabIndex: -1,
-          onClick: (event) => event.stopPropagation(),
-        },
-          h('div', { className: 'dsh-magpie-modal__header' },
-            h('h2', { id: 'dsh-magpie-uninstall-title', className: 'dsh-magpie-modal__title' },
-              h('span', { style: { verticalAlign: '-4px', marginRight: '8px' } }, h(WarningIcon)),
-              '卸载 Magpie 引擎？'),
-            h('button', {
-              type: 'button', className: 'dsh-magpie-modal__close', 'aria-label': '关闭',
-              disabled: busy, onClick: onCancel,
-            }, '×'),
-          ),
-          h('p', { className: 'dsh-magpie-modal__desc' }, '引擎及其在本机留下的全部数据将被移除。'),
-          h('div', { className: 'dsh-magpie-modal__body' },
-            h('div', { className: 'dsh-magpie-notice', 'data-tone': 'error' },
-              h(WarningIcon, { size: 14 }), '此操作不可撤销，请确认后再继续。'),
-            h('div', { className: 'dsh-magpie-modal__grid' },
-              h('div', {},
-                h('div', { className: 'dsh-magpie-modal__group-title' }, '将删除'),
-                h('ul', { className: 'dsh-magpie-list' },
-                  h('li', {}, '已下载的引擎程序'),
-                  h('li', {}, '运行配置、缓存与数据'),
-                  h('li', {}, 'GitHub 镜像等插件设置'),
-                  h('li', {}, '已同步的 Magpie 模型'),
-                )
-              ),
-              h('div', {},
-                h('div', { className: 'dsh-magpie-modal__group-title' }, '将保留'),
-                h('ul', { className: 'dsh-magpie-list' },
-                  h('li', {}, '本插件，可随时重新安装'),
-                )
-              )
-            ),
-          ),
-          h('div', { className: 'dsh-magpie-modal__footer' },
-            h('span', { className: 'dsh-magpie-modal__hint' }, busy ? '正在卸载…' : '按 Esc 取消'),
-            h('button', {
-              ref: cancelRef, className: btnClass('outline', 'md'),
-              disabled: busy, onClick: onCancel,
-            }, '取消'),
-            h('button', {
-              className: btnClass('danger', 'solid', 'md'), disabled: busy, onClick: onConfirm,
-            }, busy ? h('span', {}, h(Spinner), '卸载中…') : '卸载引擎'),
-          )
-        )
-      )
     }
 
     // ---- 已安装状态卡片 ----------------------------------------------------
@@ -516,7 +383,6 @@ window.__ModuleLoader__.load({
     function InstallCard() {
       const [info, setInfo] = React.useState(null)
       const [mirror, setMirror] = React.useState('')
-      const [confirmOpen, setConfirmOpen] = React.useState(false)
       const [busy, setBusy] = React.useState('') // '' or the key of the active button
       const [toast, setToast] = React.useState(null) // { kind: success|error|info, text }
       const toastTimer = React.useRef(null)
@@ -640,25 +506,6 @@ window.__ModuleLoader__.load({
         })
       }
 
-      function onUninstall() {
-        setConfirmOpen(true)
-      }
-
-      async function doUninstall() {
-        setConfirmOpen(false)
-        await withAction('uninstall', async () => {
-          notify('info', '正在卸载 Magpie 引擎…')
-          try {
-            const data = await apiPost('/uninstall', {})
-            if (!data.ok) throw new Error(data.error || 'uninstall failed')
-            await refresh({ silent: true })
-            notify('success', 'Magpie 引擎已卸载')
-          } catch (err) {
-            notify('error', `卸载失败：${err?.message ?? err}`)
-          }
-        })
-      }
-
       // Buttons dim while another action is running and show their own spinner.
       const btnContent = (key, text) => busy === key ? h('span', {}, h(Spinner, { small: true }), text) : text
       // Keep other actions visually dimmed while one is in flight (official disabled state).
@@ -744,10 +591,6 @@ window.__ModuleLoader__.load({
             className: btnClass('ghost', 'md'),
             style: dim('refresh'), disabled: Boolean(busy), onClick: () => void refresh(),
           }, btnContent('refresh', '刷新状态')),
-          h('button', {
-            className: btnClass('danger', 'md'),
-            style: dim('uninstall'), disabled: Boolean(busy) || installing, onClick: onUninstall,
-          }, btnContent('uninstall', '卸载引擎')),
         ),
 
         // unified feedback toast for every action
@@ -757,13 +600,6 @@ window.__ModuleLoader__.load({
               className: 'dsh-magpie-toast',
               'data-kind': toast.kind === 'error' ? 'error' : toast.kind === 'success' ? 'success' : 'info',
             }, toast.text)
-          : null,
-        confirmOpen
-          ? h(UninstallDialog, {
-              onCancel: () => setConfirmOpen(false),
-              onConfirm: doUninstall,
-              busy: busy === 'uninstall',
-            })
           : null,
       )
     }

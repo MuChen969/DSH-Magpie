@@ -348,57 +348,6 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
     try { process.kill(pid, 0); return true } catch { return false }
   }
 
-  /**
-   * Kill every process whose executable lives inside this engine's private
-   * data directory. A crash, a stale instance or a half-finished start can
-   * leave children behind that this instance no longer tracks via `child`,
-   * yet still hold file handles on the data directory. Best effort: never
-   * throws, so uninstall always continues.
-   */
-  async function killStrayProcesses() {
-    try {
-      if (process.platform === 'win32') {
-        const { execFile } = await import('node:child_process')
-        const prefix = (dataDir + path.sep).replace(/'/g, "''")
-        const script = [
-          "$ErrorActionPreference='SilentlyContinue'",
-          `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('${prefix}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-        ].join('; ')
-        await new Promise((resolve) => {
-          execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
-            { timeout: 15000, windowsHide: true }, () => resolve())
-        })
-      } else if (process.platform === 'linux') {
-        const entries = await fsp.readdir('/proc')
-        for (const name of entries) {
-          if (!/^\d+$/.test(name)) continue
-          try {
-            const exe = await fsp.readlink(`/proc/${name}/exe`)
-            if (exe === dataDir || exe.startsWith(dataDir + path.sep)) {
-              try { process.kill(Number(name), 'SIGKILL') } catch { /* already gone */ }
-            }
-          } catch { /* not our process */ }
-        }
-      } else {
-        // macOS/BSD: no /proc, fall back to ps.
-        const { execFile } = await import('node:child_process')
-        await new Promise((resolve) => {
-          execFile('ps', ['-ax', '-o', 'pid=,command='], { timeout: 8000 }, (error, stdout) => {
-            if (!error && stdout) {
-              for (const line of stdout.split('\n')) {
-                const match = line.trim().match(/^(\d+)\s+(.*)$/)
-                if (match && match[2].startsWith(dataDir)) {
-                  try { process.kill(Number(match[1]), 'SIGKILL') } catch { /* gone */ }
-                }
-              }
-            }
-            resolve()
-          })
-        })
-      }
-    } catch { /* best effort */ }
-  }
-
   async function stopChild() {
     const target = child
     if (!target) return
@@ -406,7 +355,7 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
     const pid = target.pid
     // On Windows the engine can spawn helpers that keep file handles open.
     // Kill the whole process tree with taskkill /T /F, then wait until the PID
-    // is really gone before deleting its data directory.
+    // is really gone before the engine is considered stopped.
     if (process.platform === 'win32' && pid) {
       try {
         const { execFile } = await import('node:child_process')
@@ -620,7 +569,7 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
     closing = (async () => {
       try {
         // An in-flight start may still spawn the child after stopChild() runs;
-        // wait for it so the new process cannot survive this stop/uninstall.
+        // wait for it so the new process cannot survive this stop.
         if (starting) {
           try { await starting } catch { /* a failed start spawned nothing to kill */ }
         }
@@ -633,36 +582,12 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
         webKey = ''
         return status()
       } finally {
-        // Essential: without resetting, every later stop()/uninstall() would
+        // Essential: without resetting, every later stop() would
         // return this settled promise and never kill a newly started engine.
         closing = null
       }
     })()
     return closing
-  }
-
-  /**
-   * Fully detach the engine: stop the child process and clear all in-memory
-   * references to the binary/URLs so a later install starts from a clean state.
-   * The data directory itself is removed by the Host route.
-   */
-  async function uninstall() {
-    // One-click uninstall must finish from ANY state: stopped, ready, starting,
-    // crashed, or with stale processes left by an earlier version. Every step
-    // is best effort and must never abort the rest of the cleanup.
-    try { await stop() } catch { /* a stubborn process is handled below */ }
-    try { await killStrayProcesses() } catch { /* best effort */ }
-    binary = null
-    state = 'stopped'
-    error = null
-    webURL = ''
-    gatewayURL = ''
-    webBase = ''
-    gatewayPort = 0
-    webPort = 0
-    webKey = ''
-    installState = { installing: false, progress: null, lastResult: null, error: null }
-    return status()
   }
 
   async function close() {
@@ -755,7 +680,7 @@ export function createMagpieEngine({ dataDir, logger, getMirror } = {}) {
   }
 
   return {
-    start, stop, close, status, proxy, install, uninstall, killStrayProcesses, isInstalling,
+    start, stop, close, status, proxy, install, isInstalling,
     get webUrl() { return webURL },
     get gatewayUrl() { return gatewayURL },
     get binDir() { return binDir },

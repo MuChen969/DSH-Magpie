@@ -1,18 +1,18 @@
 /**
  * @local/dsh-magpie — Host half (manual-install edition).
  *
- * Changes from the original:
- *   - No automatic engine start or model sync on activation. The user installs
- *     the binary and starts the engine explicitly from the UI.
- *   - New local routes for manual install, GitHub mirror config and duplicate
- *     installation detection.
+ * Uninstall follows DSH's official plugin contract: apply() returns a disposer
+ * that only tears down what this plugin registered (HTTP routes, event
+ * listeners, the running child process). DSH invokes that disposer on bundle
+ * uninstall, update, disable and shutdown. The plugin never deletes files
+ * under DSH_HOME on its own — removing the bundle is handled entirely by the
+ * DSH plugin manager.
  *
  * HTTP routes (loopback only, under the DSH origin):
  *   GET  /api/dsh-magpie/status            engine + install status
  *   GET  /api/dsh-magpie/install/status    install state, mirror, duplicate detection
  *   POST /api/dsh-magpie/install/config    save GitHub mirror / settings
  *   POST /api/dsh-magpie/install           start manual download (async)
- *   POST /api/dsh-magpie/uninstall         fully remove engine, data and provider
  *   GET  /api/dsh-magpie/gui               embedded GUI URL (starts engine on demand)
  *   GET  /api/dsh-magpie/models            models discovered from the Magpie gateway
  *   POST /api/dsh-magpie/sync-models       (re)register models into DSH
@@ -22,42 +22,24 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync, rmSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import {
   createMagpieEngine, UI_MOUNT, DEFAULT_MIRROR, normalizeMirror,
   detectExistingMagpie, managedBinaryInfo,
 } from './magpie-engine.js'
 
-// Directory holding this plugin's own package. pnpm removes it only on a real
-// bundle uninstall; it briefly disappears and returns during an update, which
-// gives us a reliable second signal that cleanup is actually wanted.
-const SELF_DIR = fileURLToPath(new URL('.', import.meta.url))
-
-// Uninstall coordination is kept on globalThis so it survives HMR reloads and
-// module re-evaluation: the disposing instance and the freshly applied one
-// must observe the same pending state.
-const UNINSTALL_STATE_KEY = Symbol.for('dsh-magpie.uninstall-state')
-// Grace window after a remove operation before purging. An update removes and
-// immediately reinstalls the bundle; this window lets its `install` event land
-// so we can cancel. The self-directory check is a second guard.
-const PURGE_DELAY_MS = 12000
-
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const DATA_DIR = join(DSH_HOME, 'dsh-magpie-engine')
 const LEGACY_DATA_DIR = join(DSH_HOME, 'magpie-shell-engine')
-// Plugin settings live OUTSIDE the engine data directory so uninstalling the
-// engine (which deletes DATA_DIR entirely) never destroys the user's mirror.
+// Plugin settings live OUTSIDE the engine data directory so a reset (which
+// clears DATA_DIR/magpie) never destroys the user's mirror.
 const SETTINGS_FILE = join(DSH_HOME, 'dsh-magpie-settings.json')
-// Migration marker lives outside DATA_DIR: uninstalling the engine deletes
-// DATA_DIR, and we must not re-create it on the next DSH start.
+// Migration marker lives outside DATA_DIR so it survives engine resets and
+// the one-time legacy migration is not repeated.
 const LEGACY_MIGRATION_MARKER = join(DSH_HOME, '.dsh-magpie-legacy-migrated')
 
 // The provider route name registered into @deepseek-ai/dsh-llm-pi-ai.
 const MODEL_PROVIDER_ID = 'magpie'
 const PI_AI_ENTRY_ID = 'llm-pi-ai'
-// Bundle package name, used to recognise a genuine uninstall operation.
-const BUNDLE_PACKAGE = 'dsh-magpie'
 
 const DEFAULT_SETTINGS = {
   mirror: DEFAULT_MIRROR,
@@ -120,55 +102,9 @@ async function migrateLegacyData(logger) {
 export const inject = ['webServer', 'configEditor']
 
 export function apply(ctx) {
-  // Capture long-lived service references early. During disposal these may no
-  // longer be reachable from `ctx`, but a deferred purge still needs them.
-  const logger = ctx.logger
+  // Capture long-lived service references early; they are used by the async
+  // request handlers and remain valid for the plugin's lifetime.
   const configEditor = ctx.configEditor
-
-  // ---- Uninstall intent tracking ------------------------------------------
-  // The plugin disposer also runs on DSH restart, HMR reload, plugin disable
-  // and bundle update. Deleting the ~100 MB engine in any of those cases would
-  // be destructive, so we only purge when a real `remove` operation was seen,
-  // and cancel if an `install` follows (an update removes then reinstalls).
-  const uninstallState = (globalThis[UNINSTALL_STATE_KEY] ??= {
-    removing: false,
-    generation: 0,
-  })
-  // A stale listener from a previous activation would keep its own closures
-  // alive; dispose it and install a fresh one bound to this activation.
-  uninstallState.disposeListener?.()
-  const onManagerOperation = (op) => {
-    if (!op || typeof op !== 'object') return
-    const target = String(op.target ?? '')
-    // Only events about this bundle matter. Installs of a Git-sourced bundle
-    // may report a null target, so while a removal is pending treat those as
-    // ours; a null target never starts a removal on its own.
-    const isSelf = target === BUNDLE_PACKAGE || (target === '' && uninstallState.removing)
-    if (!isSelf) return
-    if (op.phase === 'started') {
-      if (op.reason === 'remove' && op.stage === 'remove') {
-        uninstallState.removing = true
-        uninstallState.generation++
-      } else if (op.reason === 'install' || op.stage === 'enable') {
-        // A reinstall/update or re-enable supersedes the removal.
-        uninstallState.removing = false
-        uninstallState.generation++
-      }
-      return
-    }
-    // A failed or cancelled removal must not leave a stale intent that a
-    // later, unrelated disposal could act on.
-    if (op.phase === 'settled' && op.reason === 'remove' && op.stage === 'remove'
-        && (op.application === 'failed' || op.application === 'cancelled')) {
-      uninstallState.removing = false
-      uninstallState.generation++
-    }
-  }
-  // Register on the root event bus so the listener survives this plugin's own
-  // disposal (needed to observe the reinstall/update event that arrives after
-  // the remove phase disposes us). Fall back to ctx on runtimes without root.
-  const eventHost = ctx.root ?? ctx
-  uninstallState.disposeListener = eventHost.on('plugin-manager/operation', onManagerOperation)
 
   // Migration must finish before any engine work.
   const migration = migrateLegacyData(ctx.logger).catch((error) => {
@@ -214,23 +150,13 @@ export function apply(ctx) {
 
   const disposers = []
 
-  // Set while the data directory is removed (and kept until a fresh install)
-  // so leftover GUI/iframe requests cannot restart the engine and re-create
-  // the directory in the middle of an uninstall.
-  let engineDisabled = false
-  // Incremented whenever an uninstall begins. Long async operations capture
-  // the current value and re-check it before side effects, so an uninstall
-  // that starts mid-flight cannot be undone by a late writeback or a late
-  // engine restart (which would recreate the data directory being deleted).
+  // Bumped by install and reset so a long async operation (model sync, GUI
+  // proxy) can detect that the gateway port changed mid-flight and abort
+  // before writing a stale provider back into the config.
   let operationEpoch = 0
   function epochChanged(epoch) {
-    return engineDisabled || epoch !== operationEpoch
+    return epoch !== operationEpoch
   }
-
-  // A locked data directory (common on Windows just after the child exits)
-  // can make a purge partial. Retry a bounded number of times in the
-  // background so a transient lock cannot leave the engine directory behind.
-  let purgeRetryCount = 0
 
   function sendJson(res, code, body) {
     res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
@@ -260,8 +186,8 @@ export function apply(ctx) {
     }
     // CSRF defence for state-changing methods. Browsers attach Origin on
     // cross-site POST/PUT/...; a malicious page must not be able to drive
-    // /install, /uninstall, /start, /sync-models, etc. Requests without an
-    // Origin header (curl, CLI tools) are not browser-CSRF-capable and pass.
+    // /install, /start, /sync-models, etc. Requests without an Origin header
+    // (curl, CLI tools) are not browser-CSRF-capable and pass.
     const method = String(req.method || 'GET').toUpperCase()
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
       // Sec-Fetch-Site is set by the browser and cannot be forged by page JS.
@@ -369,7 +295,6 @@ export function apply(ctx) {
     const epoch = operationEpoch
     syncing = (async () => {
       try {
-        if (engineDisabled) return { ok: false, error: 'Magpie engine is not installed' }
         if (engine.isInstalling()) return { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' }
         if (engine.status().state !== 'ready') await engine.start()
         const status = engine.status()
@@ -388,9 +313,9 @@ export function apply(ctx) {
         const modelsForPiAi = magpieModelsToPiAi(models)
         const baseURL = `${gatewayBase}/v1`
 
-        // An uninstall may have started while we were awaiting start()/fetch.
-        // Do not write a provider back into a config the uninstall just cleaned.
-        if (epochChanged(epoch)) return { ok: false, error: 'engine was uninstalled during model sync' }
+        // A reset or reinstall may have changed the gateway port while we were
+        // awaiting start()/fetch. Do not write a provider pointing at a stale port.
+        if (epochChanged(epoch)) return { ok: false, error: 'engine changed during model sync; retry' }
 
         if (!force && syncState.synced && syncState.baseURL === baseURL
             && syncState.count === modelsForPiAi.length) {
@@ -403,8 +328,8 @@ export function apply(ctx) {
         if (!entry) throw new Error(`${PI_AI_ENTRY_ID} config entry is not available`)
 
         await editor.edit(entry, (current) => {
-          // Re-check inside the (async) edit so a concurrent uninstall that
-          // began after the outer check still wins.
+          // Re-check inside the (async) edit so a concurrent reset/reinstall
+          // that began after the outer check still wins.
           if (epochChanged(epoch)) return current
           const next = { ...current }
           // Only mutate the user's own override providers. Spreading
@@ -416,16 +341,44 @@ export function apply(ctx) {
           const prev = providers[MODEL_PROVIDER_ID] && typeof providers[MODEL_PROVIDER_ID] === 'object'
             ? { ...providers[MODEL_PROVIDER_ID] } : {}
           delete prev.apiKeyEnv
+          // pi-ai's openai-completions implementation refuses to dispatch ANY
+          // request without an apiKey or an Authorization header — even for a
+          // keyless loopback gateway (verified in the installed pi-ai source:
+          // getClientApiKey throws "No API key for provider" otherwise).
+          // Magpie's gateway is local and needs no real credential, so supply a
+          // harmless placeholder Authorization header. dsh-llm-pi-ai only
+          // requires headers to be Fetch-representable, and pi-ai treats a
+          // present, non-empty Authorization as satisfied. Keep any user-supplied
+          // headers, replacing only the (case-insensitive) authorization entry.
+          const prevHeaders = prev.headers && typeof prev.headers === 'object' ? prev.headers : {}
+          const headers = {}
+          for (const [name, value] of Object.entries(prevHeaders)) {
+            if (String(name).toLowerCase() !== 'authorization') headers[name] = value
+          }
+          headers.Authorization = 'Bearer magpie'
           providers[MODEL_PROVIDER_ID] = {
             ...prev,
             displayName: 'Magpie',
             api: 'openai-completions',
             baseURL,
+            headers,
             models: modelsForPiAi,
           }
           const anthropic = providers['magpie-anthropic']
           if (anthropic && typeof anthropic === 'object') {
-            providers['magpie-anthropic'] = { ...anthropic, baseURL: gatewayBase }
+            const nextAnthropic = { ...anthropic, baseURL: gatewayBase }
+            // Same keyless-route rule applies to anthropic-messages. Only add a
+            // placeholder when the user configured no credential of their own;
+            // never overwrite an existing apiKeyEnv / auth header.
+            const ah = nextAnthropic.headers && typeof nextAnthropic.headers === 'object'
+              ? nextAnthropic.headers : {}
+            const hasAuthHeader = Object.entries(ah).some(([name, value]) =>
+              ['authorization', 'x-api-key', 'cf-aig-authorization'].includes(String(name).toLowerCase())
+              && value != null && String(value).trim().length > 0)
+            if (nextAnthropic.apiKeyEnv === undefined && !hasAuthHeader) {
+              nextAnthropic.headers = { ...ah, Authorization: 'Bearer magpie' }
+            }
+            providers['magpie-anthropic'] = nextAnthropic
           }
           next.providers = providers
           return next
@@ -437,7 +390,7 @@ export function apply(ctx) {
         // uninstall. Magpie models are exposed only through the `magpie`
         // provider above; web search configuration stays under user control.
 
-        if (epochChanged(epoch)) return { ok: false, error: 'engine was uninstalled during model sync' }
+        if (epochChanged(epoch)) return { ok: false, error: 'engine changed during model sync; retry' }
         syncState = { synced: true, at: new Date().toISOString(), count: modelsForPiAi.length, error: null, baseURL }
         ctx.logger?.info?.(`[dsh-magpie] registered ${modelsForPiAi.length} Magpie models into DSH (${MODEL_PROVIDER_ID})`)
         return { ok: true, changed: true, ...syncState }
@@ -452,8 +405,8 @@ export function apply(ctx) {
     return syncing
   }
 
-  // Remove Magpie provider entries from the user's own config layer. Shared
-  // by uninstall and reset so neither leaves a stale gateway baseURL behind.
+  // Remove Magpie provider entries from the user's own config layer. Used by
+  // reset so a fresh instance does not leave a stale gateway baseURL behind.
   // Only the override layer is touched; lower-layer providers stay inherited.
   async function removeMagpieProviders() {
     const editor = configEditor
@@ -461,7 +414,7 @@ export function apply(ctx) {
     let lastError = null
     // A transient config-editor failure must not leave a Magpie provider
     // pointing at a dead gateway port. Retry with a short backoff before
-    // giving up; purgeAll reports the final failure so it is not silent.
+    // giving up; the caller logs the final failure so it is not silent.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         const entry = editor.entries().find((e) => e.options.id === PI_AI_ENTRY_ID)
@@ -481,70 +434,6 @@ export function apply(ctx) {
       }
     }
     throw lastError
-  }
-
-  // Remove every artifact this plugin has ever created. Used both by the
-  // in-app "uninstall engine" button and by a genuine bundle uninstall, so the
-  // two paths can never diverge and leave different residue behind. All steps
-  // are best effort: a locked Windows directory must not abort logical cleanup.
-  async function purgeAll() {
-    const { rm } = await import('node:fs/promises')
-    let lastRmError = null
-    try {
-      // 1. Stop the engine and sweep stray processes first so file handles are
-      //    free. Works whether or not the engine was ever started.
-      try { await engine.uninstall() } catch (error) {
-        logger?.warn?.(`[dsh-magpie] purge: engine stop failed: ${String(error?.message ?? error)}`)
-      }
-      // 2. Delete the entire private data directory (binary, config, cache,
-      //    data, state, diagnostics). Windows keeps handles briefly after a
-      //    process exits, so retry and re-sweep in the middle.
-      for (let attempt = 0; attempt < 12; attempt++) {
-        try {
-          await rm(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })
-          lastRmError = null
-          break
-        } catch (error) {
-          lastRmError = error
-          if (attempt === 2 || attempt === 6) await engine.killStrayProcesses?.()
-          await new Promise((resolve) => setTimeout(resolve, 400))
-        }
-      }
-      // 3. Delete the legacy pre-rename data directory if one was left behind.
-      try {
-        await rm(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 })
-      } catch { /* legacy dir absent — fine */ }
-      // 4. Delete the settings file and the migration marker. Both live
-      //    outside DATA_DIR precisely so an engine-only uninstall kept them;
-      //    here we are removing the whole plugin, so they must go too.
-      await rm(SETTINGS_FILE, { force: true }).catch(() => {})
-      await rm(LEGACY_MIGRATION_MARKER, { force: true }).catch(() => {})
-      // 5. Reset in-memory state so the process never reports a stale install.
-      syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
-      try {
-        await removeMagpieProviders()
-      } catch (error) {
-        logger?.warn?.(`[dsh-magpie] purge: provider cleanup failed: ${String(error?.message ?? error)}`)
-      }
-      if (lastRmError) {
-        logger?.warn?.(`[dsh-magpie] purge: data directory removal incomplete: ${String(lastRmError?.message ?? lastRmError)}`)
-        // Windows can keep handles on the directory briefly after the child
-        // exits. Retry a few times in the background so a transient lock does
-        // not leave ~100 MB behind; the UI still reports the current failure.
-        if (purgeRetryCount < 3) {
-          purgeRetryCount++
-          const retry = setTimeout(() => { void purgeAll() }, 5000)
-          retry.unref?.()
-        }
-        return { ok: false, error: `数据目录仍被占用，请稍后重试或手动删除：${DATA_DIR}`, dataDir: DATA_DIR }
-      }
-      purgeRetryCount = 0
-      logger?.info?.('[dsh-magpie] fully purged: engine, data, settings, markers and model providers')
-      return { ok: true }
-    } catch (error) {
-      logger?.warn?.(`[dsh-magpie] purge failed: ${String(error?.message ?? error)}`)
-      return { ok: false, error: String(error?.message ?? error) }
-    }
   }
 
   function registerRoute(route) {
@@ -613,20 +502,12 @@ export function apply(ctx) {
       const body = await readBody(req)
       const mirror = body.mirror === undefined ? undefined : normalizeMirror(body.mirror)
       const force = Boolean(body.force)
-      // Remember the pre-install gate state so a failed reinstall restores it
-      // instead of leaving the engine permanently marked as not installed.
-      const wasDisabled = engineDisabled
       const epoch = operationEpoch
       // Fire-and-forget: the UI polls /install/status for progress.
       void engine.install({ mirror, force }).then((result) => {
-        // An uninstall/reset may have started while the download was in
-        // flight. Its epoch bump wins: never re-enable the engine or reset
-        // sync state after the data directory was removed. Compare the epoch
-        // number directly — `epochChanged()` also tests engineDisabled, which
-        // is legitimately true right after an uninstall followed by a fresh
-        // install.
+        // A reset or newer install may have started while the download was in
+        // flight; its epoch bump wins, so we must not reset sync state.
         if (epoch !== operationEpoch) return
-        engineDisabled = false
         // A reinstall can restart the engine on a new random gateway port,
         // invalidating any previously registered model baseURL. Invalidate
         // the sync state and bump the epoch so an in-flight sync cannot write
@@ -635,48 +516,9 @@ export function apply(ctx) {
         syncState = { synced: false, at: null, count: 0, error: null, baseURL: null }
         ctx.logger?.info?.(`[dsh-magpie] manual install finished: ${result.tag}`)
       }).catch((error) => {
-        // Only restore the pre-install gate when no uninstall/reset superseded
-        // this install; otherwise keep the gate state that cleanup chose.
-        if (epoch === operationEpoch) engineDisabled = wasDisabled
         ctx.logger?.warn?.(`[dsh-magpie] manual install failed: ${String(error?.message ?? error)}`)
       })
       sendJson(res, 202, { ok: true, accepted: true })
-    },
-  })
-
-  registerRoute({
-    kind: 'exact',
-    path: '/api/dsh-magpie/uninstall',
-    handler: async (req, res) => {
-      if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
-      if (!admit(req, res)) return
-      const wasDisabled = engineDisabled
-      engineDisabled = true
-      operationEpoch++
-      // A user-triggered uninstall is also a removal from this bundle's point
-      // of view: cancel any pending deferred purge so the two paths cannot
-      // race, then perform one authoritative zero-residue cleanup.
-      uninstallState.removing = false
-      uninstallState.generation++
-      try {
-        const result = await purgeAll()
-        if (!result.ok) {
-          // Keep the gate consistent: the binary may still exist, so a
-          // reinstall must remain possible rather than reporting "not
-          // installed" forever.
-          engineDisabled = wasDisabled
-          return sendJson(res, 500, {
-            ok: false,
-            uninstalled: false,
-            error: result.error ?? 'uninstall failed',
-            ...(result.dataDir ? { dataDir: result.dataDir } : {}),
-          })
-        }
-        sendJson(res, 200, { ok: true, uninstalled: true })
-      } catch (error) {
-        engineDisabled = wasDisabled
-        sendJson(res, 500, { ok: false, error: String(error?.message ?? error) })
-      }
     },
   })
 
@@ -708,7 +550,6 @@ export function apply(ctx) {
     handler: async (req, res) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
       if (!admit(req, res)) return
-      if (engineDisabled) return sendJson(res, 503, { ok: false, error: 'Magpie engine is not installed' })
       if (engine.isInstalling()) return sendJson(res, 503, { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' })
       if (engine.status().state !== 'ready') {
         try { await engine.start() } catch (error) {
@@ -725,7 +566,6 @@ export function apply(ctx) {
     handler: async (req, res) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendJson(res, 405, { ok: false, error: 'method not allowed' })
       if (!admit(req, res)) return
-      if (engineDisabled) return sendJson(res, 503, { ok: false, error: 'Magpie engine is not installed' })
       if (engine.isInstalling()) return sendJson(res, 503, { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' })
       try {
         if (engine.status().state !== 'ready') await engine.start()
@@ -756,7 +596,6 @@ export function apply(ctx) {
     path: UI_MOUNT,
     handler: async (req, res) => {
       if (!admit(req, res)) return
-      if (engineDisabled) return sendJson(res, 503, { ok: false, error: 'Magpie engine is not installed' })
       if (engine.isInstalling()) return sendJson(res, 503, { ok: false, error: 'Magpie engine is being reinstalled, please retry shortly' })
       const epoch = operationEpoch
       const url = new URL(req.url || '/', 'http://localhost')
@@ -764,9 +603,8 @@ export function apply(ctx) {
       try {
         const deadline = Date.now() + 30000
         while (engine.status().state !== 'ready') {
-          // An uninstall may have started while we were waiting. Do not let a
-          // late start() recreate the data directory being deleted.
-          if (epochChanged(epoch)) throw new Error('engine was uninstalled during GUI request')
+          // A reset/reinstall may have changed the engine while we were waiting.
+          if (epochChanged(epoch)) throw new Error('engine changed during GUI request; retry')
           if (Date.now() > deadline) throw new Error('engine did not become ready in time')
           await engine.start()
           if (engine.status().state === 'ready') break
@@ -780,7 +618,7 @@ export function apply(ctx) {
             diag(`proxy attempt ${attempt} failed: ${String(error?.message ?? error)} | method=${req.method} path=${upstreamPath}`)
             if (res.headersSent) throw error
             if (attempt === 2) throw error
-            if (epochChanged(epoch)) throw new Error('engine was uninstalled during GUI request')
+            if (epochChanged(epoch)) throw new Error('engine changed during GUI request; retry')
             await engine.start()
             await new Promise((resolve) => setTimeout(resolve, 150))
           }
@@ -800,14 +638,10 @@ export function apply(ctx) {
       if (!admit(req, res)) return
       if (req.method === 'POST') {
         const body = await readBody(req)
-        // Never re-create the data directory once the engine was uninstalled:
-        // a still-mounted iframe keeps POSTing diagnostics here.
-        if (!engineDisabled) {
-          void appendDiag(
-            join(DATA_DIR, 'browser-diag.log'),
-            `[${new Date().toISOString()}] ${JSON.stringify(body)}\n`,
-          )
-        }
+        void appendDiag(
+          join(DATA_DIR, 'browser-diag.log'),
+          `[${new Date().toISOString()}] ${JSON.stringify(body)}\n`,
+        )
       }
       res.writeHead(200, { 'content-type': 'text/plain' })
       res.end('ok')
@@ -823,7 +657,6 @@ export function apply(ctx) {
         if (!admit(req, res)) return
         try {
           if (action === 'start') {
-            if (engineDisabled) throw new Error('Magpie engine is not installed. Download and install it first.')
             const s = await engine.start()
             sendJson(res, 200, { ok: true, state: s.state, guiUrl: `${UI_MOUNT}/`, error: s.error })
           } else if (action === 'stop') {
@@ -831,16 +664,15 @@ export function apply(ctx) {
             sendJson(res, 200, { ok: true, state: s.state })
           } else {
             const epoch = operationEpoch
-            if (engineDisabled) throw new Error('Magpie engine is not installed. Download and install it first.')
             await engine.stop()
-            if (epochChanged(epoch)) throw new Error('engine was uninstalled during reset')
+            if (epochChanged(epoch)) throw new Error('engine changed during reset; retry')
             // Reset means "clear the engine's private DATA and restart", not
             // uninstall. Delete only the engine home (config/cache/data/state)
             // and keep bin/: removing DATA_DIR wholesale also deleted the
             // verified binary, so the subsequent start() always failed.
             const { rm } = await import('node:fs/promises')
             await rm(join(DATA_DIR, 'magpie'), { recursive: true, force: true })
-            if (epochChanged(epoch)) throw new Error('engine was uninstalled during reset')
+            if (epochChanged(epoch)) throw new Error('engine changed during reset; retry')
             const s = await engine.start()
             // Restart uses a fresh random gateway port; invalidate model sync.
             operationEpoch++
@@ -875,69 +707,14 @@ export function apply(ctx) {
     ctx.logger?.warn?.(`[dsh-magpie] settings load failed: ${String(error?.message ?? error)}`)
   })
 
-  // `disposer()` runs on bundle uninstall, bundle update, plugin disable,
-  // HMR reload and DSH shutdown. It is NOT by itself a signal to delete data.
-  // Only act when a genuine `remove` operation was observed and was not
-  // superseded (update/reinstall/re-enable) in the meantime.
+  // DSH's official plugin contract: apply() returns a disposer that DSH calls
+  // on bundle uninstall, update, disable, HMR reload and shutdown. Following
+  // that contract, we only tear down what this plugin registered — HTTP routes
+  // and the running Magpie child process. We never delete files under DSH_HOME:
+  // uninstalling the bundle is handled entirely by DSH's plugin manager, and
+  // the engine/data/settings remain under the user's control.
   return () => {
     for (const disposer of disposers) disposer()
-    // Always stop the engine process so no Magpie child survives teardown,
-    // regardless of whether data will be purged.
     void engine.close()
-
-    const removing = uninstallState.removing
-    const generation = uninstallState.generation
-    if (!removing) return
-
-    // `exit` handlers must be synchronous. If the user quits DSH during the
-    // grace window, the deferred purge below would be skipped entirely and
-    // strand ~100 MB of engine data; do a best-effort synchronous sweep here.
-    // Same guards as the async path: a cancelled remove or a still-present
-    // package directory (update / hot reload) must never touch user data.
-    const syncSweep = () => {
-      if (uninstallState.generation !== generation || !uninstallState.removing) return
-      if (existsSync(SELF_DIR)) return
-      try {
-        rmSync(DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-        rmSync(LEGACY_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
-        rmSync(SETTINGS_FILE, { force: true, maxRetries: 5, retryDelay: 200 })
-        rmSync(LEGACY_MIGRATION_MARKER, { force: true, maxRetries: 5, retryDelay: 200 })
-      } catch { /* best effort during exit */ }
-    }
-    process.once('exit', syncSweep)
-
-    // Defer the destructive part. During an update the manager removes then
-    // reinstalls the bundle; the resulting `install` event flips `removing`
-    // and bumps `generation`, cancelling the pending purge.
-    const tryPurge = (attempt) => {
-      if (uninstallState.generation !== generation || !uninstallState.removing) return
-      // Second guard: pnpm deletes this plugin's own package directory only
-      // on a real uninstall. If it is still present, this was a reload or a
-      // remove that got restored, so keep the user's data. A slow pnpm remove
-      // may need one more beat, so retry once before giving up.
-      if (existsSync(SELF_DIR)) {
-        if (attempt >= 1) return
-        const retry = setTimeout(() => tryPurge(attempt + 1), 10000)
-        retry.unref?.()
-        return
-      }
-      // Detach the root-level listener now that this bundle is gone.
-      const disposeListener = uninstallState.disposeListener
-      uninstallState.disposeListener = null
-      try { disposeListener?.() } catch { /* best effort */ }
-      void purgeAll().then((result) => {
-        // On a partial failure keep the exit sweep armed so one last retry
-        // happens if DSH is closed later. On success, clear the cross-HMR
-        // intent so a later, unrelated disposal cannot act on stale state.
-        if (result && result.ok === false) return
-        uninstallState.removing = false
-        uninstallState.generation++
-      }).catch(() => {
-        // Leave the sweep armed when purge itself threw unexpectedly.
-      })
-    }
-    const timer = setTimeout(() => tryPurge(0), PURGE_DELAY_MS)
-    // Do not hold the process open purely for this cleanup on shutdown.
-    timer.unref?.()
   }
 }

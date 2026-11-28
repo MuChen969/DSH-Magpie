@@ -2,7 +2,7 @@
   "name": "dsh-magpie",
   "version": "1.0.0",
   "type": "module",
-  "description": "Embed the official Magpie Web GUI in DeepSeek Harness with manual install, permanent GitHub mirror config, in-DSH duplicate detection, gateway model registration and clean one-click uninstall",
+  "description": "Embed the official Magpie Web GUI in DeepSeek Harness with manual install, permanent GitHub mirror config, in-DSH duplicate detection and gateway model registration; bundle removal follows DSH's official plugin lifecycle",
   "author": "MuChen969",
   "license": "UNLICENSED",
   "homepage": "https://github.com/MuChen969/DSH-Magpie#readme",

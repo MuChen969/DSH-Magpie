@@ -27,7 +27,7 @@ Add a **Model workbench** entry to the DSH sidebar. Clicking it shows the offici
 | **🧩 Self-contained instance** | The engine runs in a DSH-managed private directory with random ports; it never calls or interferes with an external Magpie installation. |
 | **🔌 Model registration** | Once ready, sync models on demand to register them as the `magpie` provider in DSH, available in the model picker. Gateway address follows port changes automatically. |
 | **⚡ On-demand start/stop** | Start or stop manually, or start automatically when opening the workbench; no autostart with DSH. |
-| **🗑️ One-click uninstall, zero residue** | Uninstall in any state: stops the process, clears residue, deletes the entire private data directory along with the mirror config and migration marker, and removes the model provider — leaving no residue. Uninstalling the whole plugin from DSH performs the same cleanup automatically. |
+| **🧹 Uninstall follows DSH's official mechanism** | The plugin never deletes local data itself. When you remove the bundle from the DSH plugin panel, DSH calls the plugin's disposer: it only stops the Magpie child process and unregisters routes/listeners. The engine binary, data directory, mirror config and model provider are left intact for the user to manage. |
 
 The plugin UI follows DSH's official design language: controls use host theme tokens and the sidebar glyph is an outlined icon matching native entries. The official engine GUI itself is left untouched.
 
@@ -37,7 +37,7 @@ Install & configuration card on the plugin detail page:
 
 - When installed: a status card with binary name, version and running/ready badge
 - When not installed: a **Download & install** entry
-- GitHub mirror config, start/stop, sync models, refresh status and uninstall actions in one place
+- GitHub mirror config, start/stop, sync models and refresh status in one place
 
 Model workbench: sidebar entry → main-area iframe with the official Magpie GUI; if the engine is missing, the panel offers a direct jump back to this plugin's detail page.
 
@@ -60,8 +60,7 @@ Requires a working DeepSeek Harness (DSH) installation. Install only through the
 3. After download, click **Start engine**, or open **Model workbench** from the sidebar to start on demand.
 4. Click **Sync models to DSH** to register gateway models into the DSH model picker.
 5. Select a model under the `Magpie` provider in the DSH model picker to chat.
-6. To remove the engine, click **Uninstall engine** in the detail page and confirm; the engine, data, mirror config and migration marker are all removed, leaving no residue.
-   - Uninstalling the whole plugin from the DSH plugin panel also runs the same full cleanup automatically (after a short delay to confirm it is not an update or HMR reload). Updating the plugin keeps all data.
+6. To remove this plugin, uninstall it from DSH's plugin panel. Removal follows DSH's official plugin lifecycle: it only stops the Magpie child process and unregisters plugin resources — it does **not** delete `~/.dsh/dsh-magpie-engine`, `dsh-magpie-settings.json` or other local data. Delete those files manually if you want a full disk cleanup. Updating the plugin keeps all data.
 
 ## Local API
 
@@ -77,7 +76,6 @@ All endpoints only accept loopback addresses (`127.0.0.1` / `localhost`):
 | `GET /api/dsh-magpie/models` | List models discovered from the gateway |
 | `POST /api/dsh-magpie/sync-models` | Re-sync models into DSH manually |
 | `POST /api/dsh-magpie/start` / `stop` / `reset` | Start / stop / reset the engine |
-| `POST /api/dsh-magpie/uninstall` | One-click full uninstall, zero residue (removes mirror config too) |
 
 See [docs/DETAIL.md](docs/DETAIL.md) for more implementation details.
 
@@ -87,6 +85,7 @@ See [docs/DETAIL.md](docs/DETAIL.md) for more implementation details.
 |---|---|
 | Engine download is slow or fails | Set a working GitHub mirror prefix and retry; official GitHub must still be reachable for checksums. |
 | Workbench says the engine is not installed | Click **Go to install** in the panel to open this plugin's detail page directly. |
+| Files remain after uninstall | This is expected: by DSH's official plugin lifecycle, removing a plugin does not delete local data. For a full cleanup, delete manually: `~/.dsh/dsh-magpie-engine`, `~/.dsh/magpie-shell-engine`, `~/.dsh/dsh-magpie-settings.json`, `~/.dsh/.dsh-magpie-legacy-migrated`. |
 | No Magpie models in the picker | Start the engine, then click **Sync models to DSH**; if the gateway has no models yet, configure providers/models in the Magpie GUI first. |
 | Another Magpie plugin detected | This plugin uses a fully independent instance (own directory and random ports), so there is no conflict; decide whether you need two instances. |
 | UI did not update after code changes | Press DSH's refresh button once (or restart DSH) to load the latest plugin code. |
@@ -97,7 +96,7 @@ See [docs/DETAIL.md](docs/DETAIL.md) for more implementation details.
 DSH-Magpie/
 ├── index.js               # Host: routes, install config, engine lifecycle, model registration
 ├── magpie-engine.js       # Engine: download & verify, process management, UI reverse proxy, duplicate detection
-├── client.js              # Client: sidebar entry, iframe panel, install/uninstall card
+├── client.js              # Client: sidebar entry, iframe panel, install/config card
 ├── cordis.patch.yml       # DSH Loader patch
 ├── locale/                # English & Chinese display metadata
 ├── docs/DETAIL.md         # Plugin detail page document
