@@ -146,10 +146,31 @@ async function ensureOfficialBinary(binDir, mirror, logger, onProgress, force = 
   const asset = (release.assets ?? []).find((item) => item.name === name)
   if (!asset) throw engineError(`release ${tag} has no asset ${name}`)
 
-  const sumsUrl = `https://github.com/yetone/magpie-releases/releases/download/${tag}/SHA256SUMS`
-  const sumsRes = await fetch(sumsUrl, { signal: AbortSignal.timeout(20000) })
-  if (!sumsRes.ok) throw engineError(`official SHA256SUMS unavailable: HTTP ${sumsRes.status}`)
-  const sums = await sumsRes.text()
+  // SECURITY: the checksum manifest must come from an official GitHub host;
+  // never from the user mirror. Prefer the release-asset API on api.github.com
+  // (same trust domain as the release lookup, and reachable even where the
+  // github.com release-download host is blocked). Fall back to the classic
+  // github.com download URL when the API route is unavailable.
+  let sums = ''
+  const sumsAsset = (release.assets ?? []).find((item) => item.name === 'SHA256SUMS')
+  try {
+    if (!sumsAsset?.url) throw engineError('no SHA256SUMS asset in release')
+    const sumsRes = await fetch(sumsAsset.url, {
+      headers: { accept: 'application/octet-stream', 'user-agent': 'dsh-magpie' },
+      signal: AbortSignal.timeout(20000),
+    })
+    if (!sumsRes.ok) throw engineError(`HTTP ${sumsRes.status}`)
+    sums = await sumsRes.text()
+  } catch (apiError) {
+    const sumsUrl = `https://github.com/yetone/magpie-releases/releases/download/${tag}/SHA256SUMS`
+    try {
+      const sumsRes = await fetch(sumsUrl, { signal: AbortSignal.timeout(20000) })
+      if (!sumsRes.ok) throw engineError(`HTTP ${sumsRes.status}`)
+      sums = await sumsRes.text()
+    } catch (fallbackError) {
+      throw engineError(`official SHA256SUMS unavailable via API (${String(apiError?.message ?? apiError)}) and github.com (${String(fallbackError?.message ?? fallbackError)})`)
+    }
+  }
   const expected = sums.split('\n').map((line) => line.trim())
     .find((line) => line.endsWith(`  ${name}`))?.split(/\s+/)[0]
   if (!expected) throw engineError(`no SHA-256 entry for ${name} in official SHA256SUMS`)
